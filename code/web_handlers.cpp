@@ -460,6 +460,7 @@ void handleQuery() {
   String json = "{";
   bool success = false;
   String message = "";
+  String dataJson = "{}";
   
   if (type == "ati") {
     // 固件信息查询
@@ -495,6 +496,9 @@ void handleQuery() {
       message += "<tr><td>模组型号</td><td>" + model + "</td></tr>";
       message += "<tr><td>固件版本</td><td>" + version + "</td></tr>";
       message += "</table>";
+      dataJson = "{\"manufacturer\":\"" + jsonEscape(manufacturer) + "\"";
+      dataJson += ",\"model\":\"" + jsonEscape(model) + "\"";
+      dataJson += ",\"version\":\"" + jsonEscape(version) + "\"}";
     } else {
       message = "查询失败";
     }
@@ -530,25 +534,33 @@ void handleQuery() {
       // RSRP转换为dBm (0-97映射到-140到-44 dBm, 99表示未知)
       int rsrp = values[5].toInt();
       String rsrpStr;
+      String signalQuality = "未知";
+      int rsrpDbm = 0;
+      bool rsrpKnown = false;
       if (rsrp == 99 || rsrp == 255) {
         rsrpStr = "未知";
       } else {
-        int rsrpDbm = -140 + rsrp;
+        rsrpDbm = -140 + rsrp;
+        rsrpKnown = true;
         rsrpStr = String(rsrpDbm) + " dBm";
-        if (rsrpDbm >= -80) rsrpStr += " (信号极好)";
-        else if (rsrpDbm >= -90) rsrpStr += " (信号良好)";
-        else if (rsrpDbm >= -100) rsrpStr += " (信号一般)";
-        else if (rsrpDbm >= -110) rsrpStr += " (信号较弱)";
-        else rsrpStr += " (信号很差)";
+        if (rsrpDbm >= -80) signalQuality = "信号极好";
+        else if (rsrpDbm >= -90) signalQuality = "信号良好";
+        else if (rsrpDbm >= -100) signalQuality = "信号一般";
+        else if (rsrpDbm >= -110) signalQuality = "信号较弱";
+        else signalQuality = "信号很差";
+        rsrpStr += " (" + signalQuality + ")";
       }
       
       // RSRQ转换 (0-34映射到-19.5到-3 dB)
       int rsrq = values[4].toInt();
       String rsrqStr;
+      float rsrqDb = 0;
+      bool rsrqKnown = false;
       if (rsrq == 99 || rsrq == 255) {
         rsrqStr = "未知";
       } else {
-        float rsrqDb = -19.5 + rsrq * 0.5;
+        rsrqDb = -19.5 + rsrq * 0.5;
+        rsrqKnown = true;
         rsrqStr = String(rsrqDb, 1) + " dB";
       }
       
@@ -557,6 +569,14 @@ void handleQuery() {
       message += "<tr><td>信号质量 (RSRQ)</td><td>" + rsrqStr + "</td></tr>";
       message += "<tr><td>原始数据</td><td>" + params + "</td></tr>";
       message += "</table>";
+      dataJson = "{\"rsrp\":\"" + jsonEscape(rsrpStr) + "\"";
+      dataJson += ",\"rsrpDbm\":";
+      dataJson += rsrpKnown ? String(rsrpDbm) : String("null");
+      dataJson += ",\"rsrq\":\"" + jsonEscape(rsrqStr) + "\"";
+      dataJson += ",\"rsrqDb\":";
+      dataJson += rsrqKnown ? String(rsrqDb, 1) : String("null");
+      dataJson += ",\"quality\":\"" + jsonEscape(signalQuality) + "\"";
+      dataJson += ",\"raw\":\"" + jsonEscape(params) + "\"}";
     } else {
       message = "查询失败";
     }
@@ -611,6 +631,9 @@ void handleQuery() {
     message += "<tr><td>本机号码</td><td>" + phoneNum + "</td></tr>";
     
     message += "</table>";
+    dataJson = "{\"imsi\":\"" + jsonEscape(imsi) + "\"";
+    dataJson += ",\"iccid\":\"" + jsonEscape(iccid) + "\"";
+    dataJson += ",\"phoneNumber\":\"" + jsonEscape(phoneNum) + "\"}";
   }
   else if (type == "network") {
     // 网络状态查询
@@ -683,6 +706,10 @@ void handleQuery() {
     message += "<tr><td>APN</td><td>" + apn + "</td></tr>";
     
     message += "</table>";
+    dataJson = "{\"registration\":\"" + jsonEscape(regStatus) + "\"";
+    dataJson += ",\"operator\":\"" + jsonEscape(oper) + "\"";
+    dataJson += ",\"dataConnection\":\"" + jsonEscape(pdpStatus) + "\"";
+    dataJson += ",\"apn\":\"" + jsonEscape(apn) + "\"}";
   }
   else if (type == "wifi") {
     // WiFi状态查询
@@ -731,13 +758,25 @@ void handleQuery() {
     message += "<tr><td>WiFi信道</td><td>" + String(WiFi.channel()) + "</td></tr>";
     
     message += "</table>";
+    dataJson = "{\"connected\":" + String(WiFi.isConnected() ? "true" : "false");
+    dataJson += ",\"ssid\":\"" + jsonEscape(ssid) + "\"";
+    dataJson += ",\"rssi\":" + String(rssi);
+    dataJson += ",\"rssiDisplay\":\"" + jsonEscape(rssiStr) + "\"";
+    dataJson += ",\"ip\":\"" + WiFi.localIP().toString() + "\"";
+    dataJson += ",\"gateway\":\"" + WiFi.gatewayIP().toString() + "\"";
+    dataJson += ",\"subnetMask\":\"" + WiFi.subnetMask().toString() + "\"";
+    dataJson += ",\"dns\":\"" + WiFi.dnsIP().toString() + "\"";
+    dataJson += ",\"mac\":\"" + jsonEscape(WiFi.macAddress()) + "\"";
+    dataJson += ",\"bssid\":\"" + jsonEscape(WiFi.BSSIDstr()) + "\"";
+    dataJson += ",\"channel\":" + String(WiFi.channel()) + "}";
   }
   else {
     message = "未知的查询类型";
   }
   
   json += "\"success\":" + String(success ? "true" : "false") + ",";
-  json += "\"message\":\"" + message + "\"";
+  json += "\"message\":\"" + jsonEscape(message) + "\",";
+  json += "\"data\":" + dataJson;
   json += "}";
   
   server.send(200, "application/json", json);
@@ -1260,6 +1299,7 @@ void handleESim() {
   bool success = false;
   String message = "";
   String profiles = "";
+  String dataJson = "";
   int count = 0;
   
   if (action == "info") {
@@ -1270,14 +1310,20 @@ void handleESim() {
       success = true;
       message += "<tr><td>EID</td><td>" + String(eid) + "</td></tr>";
       
-      int notifCount;
+      int notifCount = 0;
+      bool notificationCountAvailable = false;
       if (esimGetNotificationCount(&notifCount)) {
+        notificationCountAvailable = true;
         message += "<tr><td>待处理通知</td><td>" + String(notifCount) + "</td></tr>";
       }
       
       ESimProfile profiles[10];
       int profileCount = esimGetProfiles(profiles, 10);
       message += "<tr><td>配置文件数量</td><td>" + String(profileCount) + "</td></tr>";
+      dataJson = "{\"eid\":\"" + jsonEscape(String(eid)) + "\"";
+      dataJson += ",\"notificationCount\":";
+      dataJson += notificationCountAvailable ? String(notifCount) : String("null");
+      dataJson += ",\"profileCount\":" + String(profileCount) + "}";
     } else {
       message = esimGetLastError();
     }
@@ -1379,14 +1425,14 @@ void handleESim() {
     if (esimGetNotificationCount(&notifCount)) {
       success = true;
       message = "待处理通知数量: " + String(notifCount);
+      dataJson = "{\"notificationCount\":" + String(notifCount) + "}";
     } else {
       message = esimGetLastError();
     }
   }
   else if (action == "notifretrieve") {
     logCaptureLn(String("网页端获取eSIM待处理通知..."));
-    message = "通知获取功能开发中...";
-    success = true;
+    message = "待处理通知读取尚未实现";
   }
   else {
     message = "未知操作: " + action;
@@ -1394,6 +1440,9 @@ void handleESim() {
   
   json += "\"success\":" + String(success ? "true" : "false") + ",";
   json += "\"message\":\"" + jsonEscape(message) + "\"";
+  if (dataJson.length() > 0) {
+    json += ",\"data\":" + dataJson;
+  }
   if (profiles.length() > 0) {
     json += ",\"profiles\":" + profiles;
     json += ",\"count\":" + String(count);

@@ -363,9 +363,13 @@ HTTP Basic Authentication，账号密码来自 `config.webUser` / `config.webPas
 |---|---|---|
 | `ati` | `ATI` | 制造商/型号/固件版本 |
 | `signal` | `AT+CESQ` | RSRP/RSRQ 信号强度 |
-| `siminfo` | `AT+CIMI` `AT+ICCID` `AT+CNUM` | IMSI/ICCID/本机号码 |
+| `siminfo` / `sim` | `AT+CIMI` `AT+ICCID` `AT+CNUM` | IMSI/ICCID/本机号码 |
 | `network` | `AT+CEREG?` `AT+COPS?` `AT+CGACT?` `AT+CGDCONT?` | 注册/运营商/数据/APN |
 | `wifi` | (WiFi 对象) | SSID/RSSI/IP/网关/DNS/MAC/BSSID/信道 |
+
+响应为 `{success, message, data}`。`data` 提供供新控制台直接渲染的结构化字段；`message`
+保留旧版 HTML 表格以兼容历史客户端。信号查询额外提供数值型 `rsrpDbm` / `rsrqDb`，
+用于绘制信号强度可视化。
 
 ---
 
@@ -383,6 +387,11 @@ HTTP Basic Authentication，账号密码来自 `config.webUser` / `config.webPas
 
 ### `void handleATCommand()`
 通过 `?cmd=` 透传 AT 指令到 `sendATCommand()`，返回 JSON `{success, message}`。
+
+### `void handleESim()`
+根据 `?action=` 读取 eUICC 信息和配置文件。`info` 返回结构化 `data`（EID、配置文件数量、
+待处理通知数量），`list` 返回 `profiles` 和 `count`。通知读取尚未实现时返回
+`success: false`，控制台会展示明确的不可用状态。
 
 ---
 
