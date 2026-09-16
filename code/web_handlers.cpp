@@ -818,6 +818,34 @@ void handlePing() {
   if (!checkAuth()) return;
   
   logCaptureLn(String("网页端发起Ping请求"));
+
+  String simResp = sendATCommand("AT+CPIN?", 2000);
+  if (simResp.indexOf("+CPIN: READY") < 0) {
+    logCaptureLn(String("SIM卡未就绪，取消Ping"));
+    server.send(200, "application/json",
+                "{\"success\":false,\"message\":\"SIM卡未就绪，无法执行Ping\"}");
+    return;
+  }
+
+  String registrationResp = sendATCommand("AT+CEREG?", 2000);
+  int ceregIdx = registrationResp.indexOf("+CEREG:");
+  int ceregState = -1;
+  if (ceregIdx >= 0) {
+    int commaIdx = registrationResp.indexOf(',', ceregIdx);
+    if (commaIdx >= 0) {
+      String stateText = registrationResp.substring(commaIdx + 1);
+      int nextComma = stateText.indexOf(',');
+      if (nextComma >= 0) stateText = stateText.substring(0, nextComma);
+      stateText.trim();
+      ceregState = stateText.toInt();
+    }
+  }
+  if (ceregState != 1 && ceregState != 5) {
+    logCaptureLn(String("蜂窝网络未注册，取消Ping"));
+    server.send(200, "application/json",
+                "{\"success\":false,\"message\":\"蜂窝网络未注册，无法执行Ping\"}");
+    return;
+  }
   
   // 清空串口缓冲区
   while (Serial1.available()) Serial1.read();
@@ -830,7 +858,10 @@ void handlePing() {
   // 检查激活是否成功（OK或已激活的情况）
   bool networkActivated = (activateResp.indexOf("OK") >= 0);
   if (!networkActivated) {
-    logCaptureLn(String("数据连接激活失败，尝试继续执行..."));
+    logCaptureLn(String("数据连接激活失败，取消Ping"));
+    server.send(200, "application/json",
+                "{\"success\":false,\"message\":\"蜂窝数据连接激活失败\"}");
+    return;
   }
   
   // 清空串口缓冲区
@@ -846,6 +877,7 @@ void handlePing() {
   bool gotOK = false;
   bool gotError = false;
   bool gotPingResult = false;
+  bool pingSucceeded = false;
   String pingResultMsg = "";
   
   // 等待最多35秒（30秒超时 + 5秒余量）
@@ -868,8 +900,8 @@ void handlePing() {
       }
       
       // 检查是否收到Ping结果URC
-      // 成功格式: +MPING: 1,8.8.8.8,32,xxx,xxx
-      // 失败格式: +MPING: 2 或其他
+      // 成功格式: +MPING: 0,"8.8.8.8",16,延迟,TTL
+      // 无回包时可能只收到 +MPING: "statistics",...
       int mpingIdx = resp.indexOf("+MPING:");
       if (mpingIdx >= 0) {
         // 找到换行符确定完整的一行
@@ -895,17 +927,13 @@ void handlePing() {
               resultStr = params;
             }
             resultStr.trim();
-            int result = resultStr.toInt();
-            
             gotPingResult = true;
-            
-            // result=0或1都表示成功（不同模组可能返回不同值）
-            // 如果有完整的响应参数（IP、时间等），也视为成功
-            bool pingSuccess = (result == 0 || result == 1) || (params.indexOf(',') >= 0 && params.length() > 5);
-            
-            if (pingSuccess) {
+
+            // ML307 的单次成功响应以数字 0 开头。不能使用 toInt() 判断：
+            // "statistics" 会被转成 0，从而把零回包统计误判为成功。
+            if (resultStr == "0") {
               // 成功，解析详细信息
-              // 格式: 0/1,"8.8.8.8",16,时间,TTL
+              // 格式: 0,"8.8.8.8",16,时间,TTL
               int idx1 = params.indexOf(',');
               if (idx1 >= 0) {
                 String rest = params.substring(idx1 + 1);
@@ -926,6 +954,7 @@ void handlePing() {
                   idx2 = rest.indexOf(',');
                   ip = rest.substring(0, idx2);
                 }
+                ip.trim();
                 
                 if (idx2 >= 0) {
                   rest = rest.substring(idx2 + 1);
@@ -937,22 +966,22 @@ void handlePing() {
                     if (idx4 >= 0) {
                       timeStr = rest.substring(0, idx4);
                       ttlStr = rest.substring(idx4 + 1);
-                    } else {
-                      timeStr = rest;
-                      ttlStr = "N/A";
                     }
                     timeStr.trim();
                     ttlStr.trim();
-                    pingResultMsg = "目标: " + ip + ", 延迟: " + timeStr + "ms, TTL: " + ttlStr;
+                    if (ip.length() > 0 && timeStr.length() > 0 && ttlStr.length() > 0) {
+                      pingSucceeded = true;
+                      pingResultMsg = "目标: " + ip + ", 延迟: " + timeStr + "ms, TTL: " + ttlStr;
+                    }
                   }
                 }
               }
-              if (pingResultMsg.length() == 0) {
-                pingResultMsg = "Ping成功";
-              }
+              if (!pingSucceeded) pingResultMsg = "Ping响应格式不完整";
+            } else if (resultStr == "\"statistics\"" || resultStr == "statistics") {
+              pingResultMsg = "未收到Ping回包";
             } else {
               // 失败
-              pingResultMsg = "Ping超时或目标不可达 (错误码: " + String(result) + ")";
+              pingResultMsg = "Ping超时或目标不可达 (结果码: " + resultStr + ")";
             }
             break;
           }
@@ -973,14 +1002,11 @@ void handlePing() {
   
   // 构建JSON响应
   String json = "{";
-  if (gotPingResult && pingResultMsg.indexOf("延迟") >= 0) {
-    json += "\"success\":true,";
-    json += "\"message\":\"" + pingResultMsg + "\"";
-  } else if (gotError) {
+  if (gotError) {
     json += "\"success\":false,";
     json += "\"message\":\"" + pingResultMsg + "\"";
   } else if (gotPingResult) {
-    json += "\"success\":false,";
+    json += "\"success\":" + String(pingSucceeded ? "true" : "false") + ",";
     json += "\"message\":\"" + pingResultMsg + "\"";
   } else {
     json += "\"success\":false,";

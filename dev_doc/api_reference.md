@@ -402,10 +402,11 @@ HTTP Basic Authentication，账号密码来自 `config.webUser` / `config.webPas
 
 ### `void handlePing()`
 **流程**:
-1. `AT+CGACT=1,1` 激活数据连接
-2. `AT+MPING="8.8.8.8",30,1` ping 一次（30 秒超时）
-3. 解析 `+MPING:` URC 响应，提取 IP/延迟/TTL
-4. `AT+CGACT=0,1` 关闭数据连接
-5. 返回 JSON `{success, message}`
+1. 通过 `AT+CPIN?` 和 `AT+CEREG?` 确认 SIM 就绪且已注册网络
+2. `AT+CGACT=1,1` 激活数据连接，激活失败时立即返回失败
+3. `AT+MPING="8.8.8.8",30,1` ping 一次（30 秒超时）
+4. 仅将完整的 `+MPING: 0,"IP",包长,延迟,TTL` 视为成功；统计或超时响应均为失败
+5. `AT+CGACT=0,1` 关闭数据连接
+6. 返回 JSON `{success, message}`
 
 **注意**: 整个操作最长约 35 秒。
