@@ -71,5 +71,6 @@ curl -u admin:admin123 -X POST http://DEVICE_IP/api/v1/wifi \
 | Status | `7d2ea28e-f7bd-485a-bd9d-92ad6ecfe93e` | 加密读、Notify | JSON 状态和设备 IP |
 
 可使用 nRF Connect、LightBlue 等通用 BLE 工具测试：依次写入 SSID、Password、
-`connect`，然后读取或订阅 Status。成功的凭据会保存到 ESP32 NVS，重启后继续使用；
-`wifi_config.h` 只作为从未通过 BLE/REST 配置过时的后备值。
+`connect`，然后读取或订阅 Status。凭据会保存到 ESP32 NVS，重启后继续使用。
+首次启动或 NVS 中没有 WiFi 凭据时，设备等待 BLE 配网，不使用硬编码的默认网络。
+已联网设备仍可通过 REST API 更新凭据。

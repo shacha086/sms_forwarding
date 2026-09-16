@@ -481,12 +481,8 @@ SPA 页面中的 `%PLACEHOLDER%` 在 `handleRoot()` 中通过 `html.replace()` �
 
 ---
 
-## wifi_config.h — WiFi 凭据
+## wifi_manager.h / wifi_manager.cpp — WiFi 凭据
 
-```cpp
-#define WIFI_SSID "liuwifi"
-#define WIFI_PASS "Bairuiqin"
-```
-
-**修改**: 直接编辑此文件填入实际 WiFi 信息。  
-**注意**: 此文件包含明文密码，请勿提交到公开仓库。
+WiFi 凭据通过 BLE 配网写入 NVS，已联网设备也可通过 REST API 更新。
+启动时只读取 NVS 中保存的 SSID 和密码，不提供硬编码默认值。
+尚未配置或 NVS 读取失败时，不尝试连接默认网络，保持 BLE 配网可用。

@@ -246,6 +246,7 @@ void handleStatus() {
   json += ",\"uptimeSeconds\":" + String(millis() / 1000);
   json += ",\"freeHeap\":" + String(ESP.getFreeHeap());
   json += ",\"modemReady\":" + String(modemReady ? "true" : "false");
+  json += ",\"limitedMode\":" + String(modemLimitedMode ? "true" : "false");
   json += ",\"configValid\":" + String(configValid ? "true" : "false");
   json += ",\"bleProvisioning\":" + String(isBleProvisioningActive() ? "true" : "false");
   json += ",\"wifi\":{\"connected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");

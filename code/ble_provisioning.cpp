@@ -118,9 +118,19 @@ void bleProvisioningBegin() {
   server->start();
 
   NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
-  advertising->addServiceUUID(SERVICE_UUID);
-  advertising->setName(deviceName.c_str());
-  advertising->start();
+  advertising->enableScanResponse(true);
+  bool serviceAdded = advertising->addServiceUUID(SERVICE_UUID);
+  bool nameSet = advertising->setName(deviceName.c_str());
+  bool started = advertising->start();
+
+  if (!started) {
+    logCaptureLn(String("BLE 广播启动失败"));
+    NimBLEDevice::deinit(true);
+    statusCharacteristic = nullptr;
+    return;
+  }
+  if (!serviceAdded) logCaptureLn(String("⚠️ BLE 服务 UUID 未加入广播包"));
+  if (!nameSet) logCaptureLn(String("⚠️ BLE 设备名未加入广播包"));
 
   bleActive = true;
   bleStartedAt = millis();

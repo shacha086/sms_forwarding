@@ -64,8 +64,7 @@ code/
 ├── web_handlers.h / .cpp # HTTP 请求处理器 + 日志环形缓冲区
 ├── web_html.h / .cpp     # 仅保留的旧 UI 源码，不参与当前固件
 ├── wifi_manager.h / .cpp # NVS WiFi 凭据与动态重连
-├── ble_provisioning.*    # 加密 BLE GATT 配网
-└── wifi_config.h         # WiFi SSID/密码（宏定义）
+└── ble_provisioning.*    # 加密 BLE GATT 配网
 ```
 
 ## 编译与烧录

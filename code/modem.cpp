@@ -49,6 +49,7 @@ void resetModule() {
 
 // 模组 AT 初始化流程（setup 中调用，resetModule 后也调用）
 void modemInit() {
+  modemLimitedMode = false;
   // 清掉上电噪声/残留
   while (Serial1.available()) Serial1.read();
 
@@ -58,44 +59,25 @@ void modemInit() {
   }
   logCaptureLn(String("模组AT响应正常"));
 
-  //判断型号，做一些特定操作
-  bool need_set_CGACT = true;
+  // 查询型号，仅用于启动日志。
   String resp = sendATCommand("ATI", 2000);
   logCaptureLn(String("ATI响应: " + resp));
-  if (resp.indexOf("OK") >= 0) {
-    // 解析ATI响应
-    String manufacturer = "未知";
-    String model = "未知";
-    String version = "未知";
-    
-    // 按行解析
-    int lineStart = 0;
-    int lineNum = 0;
-    for (int i = 0; i < resp.length(); i++) {
-      if (resp.charAt(i) == '\n' || i == resp.length() - 1) {
-        String line = resp.substring(lineStart, i);
-        line.trim();
-        if (line.length() > 0 && line != "ATI" && line != "OK") {
-          lineNum++;
-          if (lineNum == 1) manufacturer = line;
-          else if (lineNum == 2) model = line;
-          else if (lineNum == 3) version = line;
-        }
-        lineStart = i + 1;
-      }
-    }
-    //这个模组这条命令有bug
-    if(model == "ML307Y") need_set_CGACT = false;
-  }
 
-  if(need_set_CGACT) {
-    while (!sendATandWaitOK("AT+CGACT=0,1", 5000)) {
+  bool cgactOk = false;
+  for (int retry = 0; retry < 3 && !cgactOk; retry++) {
+    cgactOk = sendATandWaitOK("AT+CGACT=0,1", 5000);
+    if (!cgactOk) {
       logCaptureLn(String("设置CGACT失败，重试..."));
       blink_short();
     }
+  }
+  if (cgactOk) {
     logCaptureLn(String("已禁用数据连接(AT+CGACT=0,1)，防止流量消耗"));
   } else {
-    logCaptureLn(String("该型号无法配置(AT+CGACT=0,1)，跳过该命令，会不会消耗流量？自求多福"));
+    logCaptureLn(String("⚠️ CGACT 设置失败，可能未插卡，进入限制模式"));
+    modemReady = false;
+    modemLimitedMode = true;
+    return;
   }
   while (!sendATandWaitOK("AT+CNMI=2,2,0,0,0", 1000)) {
     logCaptureLn(String("设置CNMI失败，重试..."));
@@ -119,6 +101,7 @@ void modemInit() {
   } else {
     logCaptureLn(String("⚠️ 网络注册超时（无SIM卡或信号差），模组功能不可用"));
     modemReady = false;
+    modemLimitedMode = true;
   }
 }
 

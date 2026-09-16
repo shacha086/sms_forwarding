@@ -127,7 +127,8 @@ lib：
 
 当前固件使用纯 JSON REST API，不再把管理网页打包进固件。REST 路径与 BLE
 Characteristic UUID 见 [`dev_doc/rest_ble_api.md`](dev_doc/rest_ble_api.md)。WiFi 可通过
-BLE 或 `/api/v1/wifi` 动态切换，并保存到 NVS。
+BLE 或 `/api/v1/wifi` 动态切换，并保存到 NVS。首次启动需通过蓝牙配网，
+固件不再内置 WiFi 名称和密码；后续启动自动使用已保存的凭据。
 
 管理页已改为 React + TypeScript + Vite 工程，源码和维护说明位于 [`web/`](web/README.md)。
 进入 `web` 目录执行 `npm install`、`npm run build`，然后将生成的 `web/dist` 部署到

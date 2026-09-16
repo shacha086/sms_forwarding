@@ -4,17 +4,18 @@
 #include <WiFi.h>
 
 #include "web_handlers.h"
-#include "wifi_config.h"
 
 static String configuredSsid;
 static String configuredPassword;
 static unsigned long lastReconnectAttempt = 0;
 
 void loadWiFiCredentials() {
+  configuredSsid = "";
+  configuredPassword = "";
   Preferences wifiPreferences;
-  wifiPreferences.begin("wifi_config", true);
-  configuredSsid = wifiPreferences.getString("ssid", WIFI_SSID);
-  configuredPassword = wifiPreferences.getString("password", WIFI_PASS);
+  if (!wifiPreferences.begin("wifi_config", true)) return;
+  configuredSsid = wifiPreferences.getString("ssid", "");
+  configuredPassword = wifiPreferences.getString("password", "");
   wifiPreferences.end();
 }
 
