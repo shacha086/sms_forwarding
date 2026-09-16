@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'code/**'
+      - '.github/workflows/build.yml'
   pull_request:
   workflow_dispatch:
 
@@ -23,13 +24,15 @@ jobs:
         arduino-cli config init
         arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
         arduino-cli core update-index
-        arduino-cli core install esp32:esp32
+        arduino-cli core install esp32:esp32@3.3.10
     
     - name: Install dependencies
       run: |
         arduino-cli lib install "pdulib"
         arduino-cli lib install "ReadyMail"
+        arduino-cli lib install "NimBLE-Arduino@2.3.7"
     
     - name: Compile firmware
       run: |
-        arduino-cli compile --fqbn esp32:esp32:esp32c3 ./code
+        # Match the size check to the 3 MB application in code/partitions.csv.
+        arduino-cli compile --fqbn esp32:esp32:esp32c3:FlashSize=4M,PartitionScheme=huge_app ./code

@@ -1,5 +1,8 @@
 # 模块详解 — 逐文件源码指南
 
+> `web_html` 与 SPA 章节是历史实现记录；当前固件已排除内嵌页面，改用纯 REST API。
+> BLE 动态配网和最新路由见 [`rest_ble_api.md`](rest_ble_api.md)。
+
 ---
 
 ## code.ino — 主入口
@@ -50,10 +53,10 @@
    ├── server.on("/sms", handleRoot)                         # 兼容旧链接
    ├── server.on("/sendsms", HTTP_POST, handleSendSms)
    ├── server.on("/ping", HTTP_POST, handlePing)
-   ├── server.on("/query", handleQuery)
-   ├── server.on("/flight", handleFlightMode)
-   ├── server.on("/at", handleATCommand)
-   ├── server.on("/log", handleLog)                          # 系统日志 JSON
+   ├── server.on("/query", HTTP_GET, handleQuery)
+   ├── server.on("/flight", HTTP_GET, handleFlightMode)
+   ├── server.on("/at", HTTP_GET, handleATCommand)
+   ├── server.on("/log", HTTP_GET, handleLog)                # 系统日志 JSON
    └── server.begin()
 
 9. 启动通知
@@ -478,12 +481,8 @@ SPA 页面中的 `%PLACEHOLDER%` 在 `handleRoot()` 中通过 `html.replace()` �
 
 ---
 
-## wifi_config.h — WiFi 凭据
+## wifi_manager.h / wifi_manager.cpp — WiFi 凭据
 
-```cpp
-#define WIFI_SSID "liuwifi"
-#define WIFI_PASS "Bairuiqin"
-```
-
-**修改**: 直接编辑此文件填入实际 WiFi 信息。  
-**注意**: 此文件包含明文密码，请勿提交到公开仓库。
+WiFi 凭据通过 BLE 配网写入 NVS，已联网设备也可通过 REST API 更新。
+启动时只读取 NVS 中保存的 SSID 和密码，不提供硬编码默认值。
+尚未配置或 NVS 读取失败时，不尝试连接默认网络，保持 BLE 配网可用。

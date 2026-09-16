@@ -1,5 +1,7 @@
 #include "config_types.h"
 
+// Legacy UI source is retained for reference but excluded from the firmware.
+#if 0
 const char* htmlPage = R"rawliteral(
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -740,3 +742,4 @@ const char* htmlPage = R"rawliteral(
 </body>
 </html>
 )rawliteral";
+#endif

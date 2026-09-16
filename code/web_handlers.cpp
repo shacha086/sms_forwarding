@@ -1,16 +1,29 @@
 #include "web_handlers.h"
-#include "web_html.h"
 #include "config.h"
 #include "modem.h"
 #include "push.h"
-#include "wifi_config.h"
 #include "esim.h"
+#include "wifi_manager.h"
+#include "ble_provisioning.h"
 
 // ---- 日志环形缓冲区 ----
 String logBuffer[LOG_BUF_SIZE];
 int logBufIdx = 0;
 int logBufCount = 0;
 static String _logLine;  // 行缓冲：logCapture 写入这里，logCaptureLn 提交整行
+
+static bool isAllowedOrigin(const String& origin) {
+  return origin == "https://sms.ctree.site" || origin == "http://sms.ctree.site";
+}
+
+static void addCorsHeaders() {
+  String origin = server.header("Origin");
+  if (!isAllowedOrigin(origin)) return;
+  server.sendHeader("Access-Control-Allow-Origin", origin);
+  server.sendHeader("Access-Control-Allow-Credentials", "true");
+  server.sendHeader("Access-Control-Allow-Private-Network", "true");
+  server.sendHeader("Vary", "Origin");
+}
 
 static void _logAppend(const String& line) {
   logBuffer[logBufIdx] = line;
@@ -65,6 +78,7 @@ void logCaptureLn(const char* msg) {
 
 // 检查HTTP Basic认证
 bool checkAuth() {
+  addCorsHeaders();
   if (!server.authenticate(config.webUser.c_str(), config.webPass.c_str())) {
     server.requestAuthentication(BASIC_AUTH, "SMS Forwarding", "请输入管理员账号密码");
     return false;
@@ -72,6 +86,10 @@ bool checkAuth() {
   return true;
 }
 
+// The old embedded UI is intentionally excluded from the firmware. Keeping
+// the source below for now makes the REST migration easy to review and avoids
+// breaking downstream forks that may still carry UI customizations.
+#if 0
 // HTML 属性/文本转义，防止配置值中的引号等破坏页面结构
 static String htmlEscape(const String& s) {
   String r;
@@ -211,6 +229,83 @@ void handleRoot() {
   html.replace("%PUSH_CHANNELS%", channelsHtml);
   
   server.send(200, "text/html", html);
+}
+#endif
+
+static bool isValidPushType(int typeVal) {
+  return typeVal >= PUSH_TYPE_POST_JSON && typeVal <= PUSH_TYPE_TELEGRAM;
+}
+
+// 轻量状态入口，不再构造和复制约 44 KB 的内嵌 HTML。
+void handleStatus() {
+  if (!checkAuth()) return;
+
+  String json;
+  json.reserve(320);
+  json = "{\"service\":\"sms-forwarding\",\"apiVersion\":1";
+  json += ",\"uptimeSeconds\":" + String(millis() / 1000);
+  json += ",\"freeHeap\":" + String(ESP.getFreeHeap());
+  json += ",\"modemReady\":" + String(modemReady ? "true" : "false");
+  json += ",\"limitedMode\":" + String(modemLimitedMode ? "true" : "false");
+  json += ",\"configValid\":" + String(configValid ? "true" : "false");
+  json += ",\"bleProvisioning\":" + String(isBleProvisioningActive() ? "true" : "false");
+  json += ",\"wifi\":{\"connected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
+  json += ",\"ssid\":\"" + jsonEscape(getConfiguredWiFiSsid()) + "\"";
+  if (WiFi.status() == WL_CONNECTED) {
+    json += ",\"ip\":\"" + WiFi.localIP().toString() + "\"";
+    json += ",\"rssi\":" + String(WiFi.RSSI());
+  }
+  json += "},\"endpoints\":{\"config\":\"/api/v1/config\",\"sms\":\"/api/v1/sms\",\"wifi\":\"/api/v1/wifi\",\"logs\":\"/api/v1/logs\"}}";
+  server.send(200, "application/json", json);
+}
+
+void handleRoot() {
+  String target = "https://sms.ctree.site/#" + WiFi.localIP().toString();
+  server.sendHeader("Location", target, true);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(302, "text/plain", "Open the SMS Forwarding dashboard");
+}
+
+void handleCorsPreflight() {
+  String origin = server.header("Origin");
+  if (!isAllowedOrigin(origin)) {
+    server.send(403, "application/json", "{\"success\":false,\"message\":\"origin not allowed\"}");
+    return;
+  }
+  addCorsHeaders();
+  server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  server.sendHeader("Access-Control-Max-Age", "600");
+  server.send(204, "text/plain", "");
+}
+
+void handleConfigGet() {
+  if (!checkAuth()) return;
+
+  String json;
+  json.reserve(768);
+  json = "{\"webUser\":\"" + jsonEscape(config.webUser) + "\"";
+  json += ",\"smtpServer\":\"" + jsonEscape(config.smtpServer) + "\"";
+  json += ",\"smtpPort\":" + String(config.smtpPort);
+  json += ",\"smtpUser\":\"" + jsonEscape(config.smtpUser) + "\"";
+  json += ",\"smtpPasswordSet\":" + String(config.smtpPass.length() > 0 ? "true" : "false");
+  json += ",\"smtpSendTo\":\"" + jsonEscape(config.smtpSendTo) + "\"";
+  json += ",\"adminPhone\":\"" + jsonEscape(config.adminPhone) + "\"";
+  json += ",\"numberBlackList\":\"" + jsonEscape(config.numberBlackList) + "\"";
+  json += ",\"pushChannels\":[";
+  for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
+    if (i) json += ',';
+    const PushChannel& ch = config.pushChannels[i];
+    json += "{\"index\":" + String(i) + ",\"enabled\":" + String(ch.enabled ? "true" : "false");
+    json += ",\"type\":" + String((int)ch.type);
+    json += ",\"name\":\"" + jsonEscape(ch.name) + "\"";
+    json += ",\"url\":\"" + jsonEscape(ch.url) + "\"";
+    json += ",\"key1Set\":" + String(ch.key1.length() > 0 ? "true" : "false");
+    json += ",\"key2Set\":" + String(ch.key2.length() > 0 ? "true" : "false");
+    json += ",\"customBody\":\"" + jsonEscape(ch.customBody) + "\"}";
+  }
+  json += "]}";
+  server.send(200, "application/json", json);
 }
 
 // 处理工具箱页面请求 — 已整合到主页，直接返回主页
@@ -365,6 +460,7 @@ void handleQuery() {
   String json = "{";
   bool success = false;
   String message = "";
+  String dataJson = "{}";
   
   if (type == "ati") {
     // 固件信息查询
@@ -400,6 +496,9 @@ void handleQuery() {
       message += "<tr><td>模组型号</td><td>" + model + "</td></tr>";
       message += "<tr><td>固件版本</td><td>" + version + "</td></tr>";
       message += "</table>";
+      dataJson = "{\"manufacturer\":\"" + jsonEscape(manufacturer) + "\"";
+      dataJson += ",\"model\":\"" + jsonEscape(model) + "\"";
+      dataJson += ",\"version\":\"" + jsonEscape(version) + "\"}";
     } else {
       message = "查询失败";
     }
@@ -435,25 +534,33 @@ void handleQuery() {
       // RSRP转换为dBm (0-97映射到-140到-44 dBm, 99表示未知)
       int rsrp = values[5].toInt();
       String rsrpStr;
+      String signalQuality = "未知";
+      int rsrpDbm = 0;
+      bool rsrpKnown = false;
       if (rsrp == 99 || rsrp == 255) {
         rsrpStr = "未知";
       } else {
-        int rsrpDbm = -140 + rsrp;
+        rsrpDbm = -140 + rsrp;
+        rsrpKnown = true;
         rsrpStr = String(rsrpDbm) + " dBm";
-        if (rsrpDbm >= -80) rsrpStr += " (信号极好)";
-        else if (rsrpDbm >= -90) rsrpStr += " (信号良好)";
-        else if (rsrpDbm >= -100) rsrpStr += " (信号一般)";
-        else if (rsrpDbm >= -110) rsrpStr += " (信号较弱)";
-        else rsrpStr += " (信号很差)";
+        if (rsrpDbm >= -80) signalQuality = "信号极好";
+        else if (rsrpDbm >= -90) signalQuality = "信号良好";
+        else if (rsrpDbm >= -100) signalQuality = "信号一般";
+        else if (rsrpDbm >= -110) signalQuality = "信号较弱";
+        else signalQuality = "信号很差";
+        rsrpStr += " (" + signalQuality + ")";
       }
       
       // RSRQ转换 (0-34映射到-19.5到-3 dB)
       int rsrq = values[4].toInt();
       String rsrqStr;
+      float rsrqDb = 0;
+      bool rsrqKnown = false;
       if (rsrq == 99 || rsrq == 255) {
         rsrqStr = "未知";
       } else {
-        float rsrqDb = -19.5 + rsrq * 0.5;
+        rsrqDb = -19.5 + rsrq * 0.5;
+        rsrqKnown = true;
         rsrqStr = String(rsrqDb, 1) + " dB";
       }
       
@@ -462,11 +569,19 @@ void handleQuery() {
       message += "<tr><td>信号质量 (RSRQ)</td><td>" + rsrqStr + "</td></tr>";
       message += "<tr><td>原始数据</td><td>" + params + "</td></tr>";
       message += "</table>";
+      dataJson = "{\"rsrp\":\"" + jsonEscape(rsrpStr) + "\"";
+      dataJson += ",\"rsrpDbm\":";
+      dataJson += rsrpKnown ? String(rsrpDbm) : String("null");
+      dataJson += ",\"rsrq\":\"" + jsonEscape(rsrqStr) + "\"";
+      dataJson += ",\"rsrqDb\":";
+      dataJson += rsrqKnown ? String(rsrqDb, 1) : String("null");
+      dataJson += ",\"quality\":\"" + jsonEscape(signalQuality) + "\"";
+      dataJson += ",\"raw\":\"" + jsonEscape(params) + "\"}";
     } else {
       message = "查询失败";
     }
   }
-  else if (type == "siminfo") {
+  else if (type == "siminfo" || type == "sim") {
     // SIM卡信息查询
     success = true;
     message = "<table class='info-table'>";
@@ -516,6 +631,9 @@ void handleQuery() {
     message += "<tr><td>本机号码</td><td>" + phoneNum + "</td></tr>";
     
     message += "</table>";
+    dataJson = "{\"imsi\":\"" + jsonEscape(imsi) + "\"";
+    dataJson += ",\"iccid\":\"" + jsonEscape(iccid) + "\"";
+    dataJson += ",\"phoneNumber\":\"" + jsonEscape(phoneNum) + "\"}";
   }
   else if (type == "network") {
     // 网络状态查询
@@ -588,6 +706,10 @@ void handleQuery() {
     message += "<tr><td>APN</td><td>" + apn + "</td></tr>";
     
     message += "</table>";
+    dataJson = "{\"registration\":\"" + jsonEscape(regStatus) + "\"";
+    dataJson += ",\"operator\":\"" + jsonEscape(oper) + "\"";
+    dataJson += ",\"dataConnection\":\"" + jsonEscape(pdpStatus) + "\"";
+    dataJson += ",\"apn\":\"" + jsonEscape(apn) + "\"}";
   }
   else if (type == "wifi") {
     // WiFi状态查询
@@ -636,13 +758,25 @@ void handleQuery() {
     message += "<tr><td>WiFi信道</td><td>" + String(WiFi.channel()) + "</td></tr>";
     
     message += "</table>";
+    dataJson = "{\"connected\":" + String(WiFi.isConnected() ? "true" : "false");
+    dataJson += ",\"ssid\":\"" + jsonEscape(ssid) + "\"";
+    dataJson += ",\"rssi\":" + String(rssi);
+    dataJson += ",\"rssiDisplay\":\"" + jsonEscape(rssiStr) + "\"";
+    dataJson += ",\"ip\":\"" + WiFi.localIP().toString() + "\"";
+    dataJson += ",\"gateway\":\"" + WiFi.gatewayIP().toString() + "\"";
+    dataJson += ",\"subnetMask\":\"" + WiFi.subnetMask().toString() + "\"";
+    dataJson += ",\"dns\":\"" + WiFi.dnsIP().toString() + "\"";
+    dataJson += ",\"mac\":\"" + jsonEscape(WiFi.macAddress()) + "\"";
+    dataJson += ",\"bssid\":\"" + jsonEscape(WiFi.BSSIDstr()) + "\"";
+    dataJson += ",\"channel\":" + String(WiFi.channel()) + "}";
   }
   else {
     message = "未知的查询类型";
   }
   
   json += "\"success\":" + String(success ? "true" : "false") + ",";
-  json += "\"message\":\"" + message + "\"";
+  json += "\"message\":\"" + jsonEscape(message) + "\",";
+  json += "\"data\":" + dataJson;
   json += "}";
   
   server.send(200, "application/json", json);
@@ -674,34 +808,9 @@ void handleSendSms() {
     resultMsg = success ? "短信发送成功！" : "短信发送失败，请检查模组状态";
   }
   
-  String html = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta http-equiv="refresh" content="3;url=/sms">
-  <title>发送结果</title>
-  <style>
-    body { font-family: Arial, sans-serif; text-align: center; padding-top: 100px; background: #f5f5f5; }
-    .result { padding: 20px; border-radius: 10px; display: inline-block; }
-    .success { background: #4CAF50; color: white; }
-    .error { background: #f44336; color: white; }
-  </style>
-</head>
-<body>
-  <div class="result %CLASS%">
-    <h2>%ICON% %MSG%</h2>
-    <p>3秒后返回发送页面...</p>
-  </div>
-</body>
-</html>
-)rawliteral";
-  
-  html.replace("%CLASS%", success ? "success" : "error");
-  html.replace("%ICON%", success ? "✅" : "❌");
-  html.replace("%MSG%", resultMsg);
-  
-  server.send(200, "text/html", html);
+  String json = "{\"success\":" + String(success ? "true" : "false") +
+                ",\"message\":\"" + jsonEscape(resultMsg) + "\"}";
+  server.send(success ? 200 : 400, "application/json", json);
 }
 
 // 处理Ping请求
@@ -709,6 +818,34 @@ void handlePing() {
   if (!checkAuth()) return;
   
   logCaptureLn(String("网页端发起Ping请求"));
+
+  String simResp = sendATCommand("AT+CPIN?", 2000);
+  if (simResp.indexOf("+CPIN: READY") < 0) {
+    logCaptureLn(String("SIM卡未就绪，取消Ping"));
+    server.send(200, "application/json",
+                "{\"success\":false,\"message\":\"SIM卡未就绪，无法执行Ping\"}");
+    return;
+  }
+
+  String registrationResp = sendATCommand("AT+CEREG?", 2000);
+  int ceregIdx = registrationResp.indexOf("+CEREG:");
+  int ceregState = -1;
+  if (ceregIdx >= 0) {
+    int commaIdx = registrationResp.indexOf(',', ceregIdx);
+    if (commaIdx >= 0) {
+      String stateText = registrationResp.substring(commaIdx + 1);
+      int nextComma = stateText.indexOf(',');
+      if (nextComma >= 0) stateText = stateText.substring(0, nextComma);
+      stateText.trim();
+      ceregState = stateText.toInt();
+    }
+  }
+  if (ceregState != 1 && ceregState != 5) {
+    logCaptureLn(String("蜂窝网络未注册，取消Ping"));
+    server.send(200, "application/json",
+                "{\"success\":false,\"message\":\"蜂窝网络未注册，无法执行Ping\"}");
+    return;
+  }
   
   // 清空串口缓冲区
   while (Serial1.available()) Serial1.read();
@@ -721,7 +858,10 @@ void handlePing() {
   // 检查激活是否成功（OK或已激活的情况）
   bool networkActivated = (activateResp.indexOf("OK") >= 0);
   if (!networkActivated) {
-    logCaptureLn(String("数据连接激活失败，尝试继续执行..."));
+    logCaptureLn(String("数据连接激活失败，取消Ping"));
+    server.send(200, "application/json",
+                "{\"success\":false,\"message\":\"蜂窝数据连接激活失败\"}");
+    return;
   }
   
   // 清空串口缓冲区
@@ -737,6 +877,7 @@ void handlePing() {
   bool gotOK = false;
   bool gotError = false;
   bool gotPingResult = false;
+  bool pingSucceeded = false;
   String pingResultMsg = "";
   
   // 等待最多35秒（30秒超时 + 5秒余量）
@@ -759,8 +900,8 @@ void handlePing() {
       }
       
       // 检查是否收到Ping结果URC
-      // 成功格式: +MPING: 1,8.8.8.8,32,xxx,xxx
-      // 失败格式: +MPING: 2 或其他
+      // 成功格式: +MPING: 0,"8.8.8.8",16,延迟,TTL
+      // 无回包时可能只收到 +MPING: "statistics",...
       int mpingIdx = resp.indexOf("+MPING:");
       if (mpingIdx >= 0) {
         // 找到换行符确定完整的一行
@@ -786,17 +927,13 @@ void handlePing() {
               resultStr = params;
             }
             resultStr.trim();
-            int result = resultStr.toInt();
-            
             gotPingResult = true;
-            
-            // result=0或1都表示成功（不同模组可能返回不同值）
-            // 如果有完整的响应参数（IP、时间等），也视为成功
-            bool pingSuccess = (result == 0 || result == 1) || (params.indexOf(',') >= 0 && params.length() > 5);
-            
-            if (pingSuccess) {
+
+            // ML307 的单次成功响应以数字 0 开头。不能使用 toInt() 判断：
+            // "statistics" 会被转成 0，从而把零回包统计误判为成功。
+            if (resultStr == "0") {
               // 成功，解析详细信息
-              // 格式: 0/1,"8.8.8.8",16,时间,TTL
+              // 格式: 0,"8.8.8.8",16,时间,TTL
               int idx1 = params.indexOf(',');
               if (idx1 >= 0) {
                 String rest = params.substring(idx1 + 1);
@@ -817,6 +954,7 @@ void handlePing() {
                   idx2 = rest.indexOf(',');
                   ip = rest.substring(0, idx2);
                 }
+                ip.trim();
                 
                 if (idx2 >= 0) {
                   rest = rest.substring(idx2 + 1);
@@ -828,22 +966,22 @@ void handlePing() {
                     if (idx4 >= 0) {
                       timeStr = rest.substring(0, idx4);
                       ttlStr = rest.substring(idx4 + 1);
-                    } else {
-                      timeStr = rest;
-                      ttlStr = "N/A";
                     }
                     timeStr.trim();
                     ttlStr.trim();
-                    pingResultMsg = "目标: " + ip + ", 延迟: " + timeStr + "ms, TTL: " + ttlStr;
+                    if (ip.length() > 0 && timeStr.length() > 0 && ttlStr.length() > 0) {
+                      pingSucceeded = true;
+                      pingResultMsg = "目标: " + ip + ", 延迟: " + timeStr + "ms, TTL: " + ttlStr;
+                    }
                   }
                 }
               }
-              if (pingResultMsg.length() == 0) {
-                pingResultMsg = "Ping成功";
-              }
+              if (!pingSucceeded) pingResultMsg = "Ping响应格式不完整";
+            } else if (resultStr == "\"statistics\"" || resultStr == "statistics") {
+              pingResultMsg = "未收到Ping回包";
             } else {
               // 失败
-              pingResultMsg = "Ping超时或目标不可达 (错误码: " + String(result) + ")";
+              pingResultMsg = "Ping超时或目标不可达 (结果码: " + resultStr + ")";
             }
             break;
           }
@@ -864,14 +1002,11 @@ void handlePing() {
   
   // 构建JSON响应
   String json = "{";
-  if (gotPingResult && pingResultMsg.indexOf("延迟") >= 0) {
-    json += "\"success\":true,";
-    json += "\"message\":\"" + pingResultMsg + "\"";
-  } else if (gotError) {
+  if (gotError) {
     json += "\"success\":false,";
     json += "\"message\":\"" + pingResultMsg + "\"";
   } else if (gotPingResult) {
-    json += "\"success\":false,";
+    json += "\"success\":" + String(pingSucceeded ? "true" : "false") + ",";
     json += "\"message\":\"" + pingResultMsg + "\"";
   } else {
     json += "\"success\":false,";
@@ -938,18 +1073,21 @@ void handleSave() {
     if (server.hasArg(enKey) || server.hasArg(typeKey) || server.hasArg(urlKey) ||
         server.hasArg(nameKey) || server.hasArg(k1Key) || server.hasArg(k2Key) ||
         server.hasArg(bodyKey)) {
-      config.pushChannels[i].enabled = server.hasArg(enKey) && server.arg(enKey) == "on";
+      if (server.hasArg(enKey)) {
+        String enabledValue = server.arg(enKey);
+        config.pushChannels[i].enabled = enabledValue == "on" || enabledValue == "true" || enabledValue == "1";
+      }
       if (server.hasArg(typeKey)) {
         int typeVal = server.arg(typeKey).toInt();
         if (isValidPushType(typeVal)) {
           config.pushChannels[i].type = (PushType)typeVal;
         }
       }
-      config.pushChannels[i].url = server.arg(urlKey);
-      config.pushChannels[i].name = server.arg(nameKey);
-      config.pushChannels[i].key1 = server.arg(k1Key);
-      config.pushChannels[i].key2 = server.arg(k2Key);
-      config.pushChannels[i].customBody = server.arg(bodyKey);
+      if (server.hasArg(urlKey)) config.pushChannels[i].url = server.arg(urlKey);
+      if (server.hasArg(nameKey)) config.pushChannels[i].name = server.arg(nameKey);
+      if (server.hasArg(k1Key)) config.pushChannels[i].key1 = server.arg(k1Key);
+      if (server.hasArg(k2Key)) config.pushChannels[i].key2 = server.arg(k2Key);
+      if (server.hasArg(bodyKey)) config.pushChannels[i].customBody = server.arg(bodyKey);
       if (config.pushChannels[i].name.length() == 0) {
         config.pushChannels[i].name = "通道" + String(i + 1);
       }
@@ -959,28 +1097,7 @@ void handleSave() {
   saveConfig();
   configValid = isConfigValid();
   
-  String html = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta http-equiv="refresh" content="3;url=/">
-  <title>保存成功</title>
-  <style>
-    body { font-family: Arial, sans-serif; text-align: center; padding-top: 100px; background: #f5f5f5; }
-    .success { background: #4CAF50; color: white; padding: 20px; border-radius: 10px; display: inline-block; }
-  </style>
-</head>
-<body>
-  <div class="success">
-    <h2>✅ 配置保存成功！</h2>
-    <p>3秒后返回配置页面...</p>
-    <p>如果修改了账号密码，请使用新的账号密码登录</p>
-  </div>
-</body>
-</html>
-)rawliteral";
-  server.send(200, "text/html", html);
+  server.send(200, "application/json", "{\"success\":true,\"message\":\"configuration saved\"}");
   
   // 如果配置有效，发送启动通知
   if (configValid) {
@@ -1167,26 +1284,25 @@ void handleWifi() {
   busy = true;
 
   String action = server.arg("action");
-  if (action == "restart") {
+  if (action == "connect") {
+    String ssid = server.arg("ssid");
+    String password = server.arg("password");
+    if (!saveWiFiCredentials(ssid, password)) {
+      server.send(400, "application/json", "{\"success\":false,\"message\":\"invalid WiFi credentials\"}");
+    } else {
+      // Acknowledge before leaving the current AP; otherwise the HTTP response
+      // is lost as soon as the station disconnects.
+      server.send(202, "application/json", "{\"success\":true,\"message\":\"WiFi switch started; query status on the new network\"}");
+      delay(200);
+      connectConfiguredWiFi(15000);
+    }
+  } else if (action == "enable_ble") {
+    bleProvisioningBegin();
+    server.send(200, "application/json", "{\"success\":true,\"message\":\"BLE provisioning enabled\"}");
+  } else if (action == "restart") {
     logCaptureLn(String("网页端请求重启WiFi..."));
     server.send(200, "application/json", "{\"success\":true,\"message\":\"WiFi 正在重启，请等待约 5 秒后刷新页面\"}");
-    WiFi.disconnect(true);
-    delay(500);
-    WiFi.setSleep(false);
-    WiFi.setAutoReconnect(true);
-    WiFi.setScanMethod(WIFI_FAST_SCAN);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    logCaptureLn(String("正在重新连接WiFi: " + String(WIFI_SSID)));
-    unsigned long start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
-      delay(50);
-      server.handleClient();
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-      logCaptureLn(String("WiFi 重连成功, IP: " + WiFi.localIP().toString()));
-    } else {
-      logCaptureLn(String("WiFi 重连失败，将在后台持续尝试"));
-    }
+    connectConfiguredWiFi(15000);
   } else {
     server.send(200, "application/json", "{\"success\":false,\"message\":\"未知操作\"}");
   }
@@ -1209,6 +1325,7 @@ void handleESim() {
   bool success = false;
   String message = "";
   String profiles = "";
+  String dataJson = "";
   int count = 0;
   
   if (action == "info") {
@@ -1219,14 +1336,20 @@ void handleESim() {
       success = true;
       message += "<tr><td>EID</td><td>" + String(eid) + "</td></tr>";
       
-      int notifCount;
+      int notifCount = 0;
+      bool notificationCountAvailable = false;
       if (esimGetNotificationCount(&notifCount)) {
+        notificationCountAvailable = true;
         message += "<tr><td>待处理通知</td><td>" + String(notifCount) + "</td></tr>";
       }
       
       ESimProfile profiles[10];
       int profileCount = esimGetProfiles(profiles, 10);
       message += "<tr><td>配置文件数量</td><td>" + String(profileCount) + "</td></tr>";
+      dataJson = "{\"eid\":\"" + jsonEscape(String(eid)) + "\"";
+      dataJson += ",\"notificationCount\":";
+      dataJson += notificationCountAvailable ? String(notifCount) : String("null");
+      dataJson += ",\"profileCount\":" + String(profileCount) + "}";
     } else {
       message = esimGetLastError();
     }
@@ -1328,14 +1451,14 @@ void handleESim() {
     if (esimGetNotificationCount(&notifCount)) {
       success = true;
       message = "待处理通知数量: " + String(notifCount);
+      dataJson = "{\"notificationCount\":" + String(notifCount) + "}";
     } else {
       message = esimGetLastError();
     }
   }
   else if (action == "notifretrieve") {
     logCaptureLn(String("网页端获取eSIM待处理通知..."));
-    message = "通知获取功能开发中...";
-    success = true;
+    message = "待处理通知读取尚未实现";
   }
   else {
     message = "未知操作: " + action;
@@ -1343,6 +1466,9 @@ void handleESim() {
   
   json += "\"success\":" + String(success ? "true" : "false") + ",";
   json += "\"message\":\"" + jsonEscape(message) + "\"";
+  if (dataJson.length() > 0) {
+    json += ",\"data\":" + dataJson;
+  }
   if (profiles.length() > 0) {
     json += ",\"profiles\":" + profiles;
     json += ",\"count\":" + String(count);

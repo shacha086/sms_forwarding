@@ -3,7 +3,7 @@
 
 #include "globals.h"
 
-#define LOG_BUF_SIZE 120
+#define LOG_BUF_SIZE 60
 
 extern String logBuffer[LOG_BUF_SIZE];
 extern int logBufIdx;
@@ -17,6 +17,9 @@ void logCaptureLn(const char* msg);
 
 bool checkAuth();
 void handleRoot();
+void handleStatus();
+void handleCorsPreflight();
+void handleConfigGet();
 void handleToolsPage();
 void handleSave();
 void handleQuery();

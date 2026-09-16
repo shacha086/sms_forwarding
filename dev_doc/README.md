@@ -2,7 +2,7 @@
 
 ## 项目简介
 
-基于 **ESP32-C3 (MakerGO SuperMini)** 的短信转发设备。通过 4G/LTE 模组接收短信，经由 WiFi 网络将短信内容推送到邮件和多种即时通讯平台（微信/钉钉/飞书/Telegram 等）。提供 Web 管理界面进行配置和诊断。
+基于 **ESP32-C3 (MakerGO SuperMini)** 的短信转发设备。通过 4G/LTE 模组接收短信，经由 WiFi 网络将短信内容推送到邮件和多种即时通讯平台（微信/钉钉/飞书/Telegram 等）。通过轻量 REST API 管理，并支持 BLE 动态配网。
 
 ## 硬件平台
 
@@ -21,6 +21,7 @@
 |---|---|---|
 | pdulib | 0.5.11 | PDU 格式短信编解码 |
 | ReadyMail | 0.4.2 | SMTP 邮件发送 |
+| NimBLE-Arduino | 2.3.7 | 低占用 BLE 配网 |
 | Arduino ESP32 Core | 3.3.10 | WiFi / HTTP / mbedTLS / NTP |
 
 ## 核心功能
@@ -29,8 +30,8 @@
 2. **长短信合并** — 支持多段长短信（最多 10 段）自动拼合，30 秒超时保护
 3. **多通道推送** — 同时支持最多 5 个推送通道，可独立配置推送到不同平台
 4. **邮件通知** — 通过 SMTP 发送通知邮件（QQ 邮箱等）
-5. **Web 管理** — 单页应用 (SPA)，侧边栏导航 + HTTP Basic Auth 保护
-6. **系统日志** — Web 端实时查看设备串口日志，自动刷新，最多保留 120 行
+5. **REST 管理** — 纯 JSON API + HTTP Basic Auth，不在固件中打包前端页面
+6. **系统日志** — REST 获取最近 60 行设备日志
 7. **管理员命令** — 通过短信远程执行 SMS:发送 和 RESET 命令（仅限管理员号码）
 8. **号码黑名单** — 支持按号码过滤骚扰短信
 
@@ -61,11 +62,18 @@ code/
 ├── push.h / .cpp         # 多通道推送、邮件通知、加密工具函数
 ├── sms_process.h / .cpp  # 短信解析、长短信合并、黑名单、管理员命令
 ├── web_handlers.h / .cpp # HTTP 请求处理器 + 日志环形缓冲区
-├── web_html.h / .cpp     # SPA HTML 页面模板（单页 10 个面板）
-└── wifi_config.h         # WiFi SSID/密码（宏定义）
+├── web_html.h / .cpp     # 仅保留的旧 UI 源码，不参与当前固件
+├── wifi_manager.h / .cpp # NVS WiFi 凭据与动态重连
+└── ble_provisioning.*    # 加密 BLE GATT 配网
 ```
 
 ## 编译与烧录
+
+`code/partitions.csv` 定义了 3 MB 单应用分区（无 OTA），适用于本项目使用的 4 MB
+ESP32-C3 SuperMini。Arduino IDE/CLI 会在编译时自动选择草图目录中的自定义分区表。
+容量检查不会自动从该 CSV 更新上限，还需设置 `FlashSize=4M,PartitionScheme=huge_app`，
+使应用容量上限与 CSV 中的 `0x300000`（3145728 字节）一致。IDE 中选择 4 MB Flash
+及 Huge APP；以下 CLI 示例使用与 CI 一致的通用 ESP32-C3 开发板定义。
 
 ```powershell
 # 设置环境
@@ -74,10 +82,10 @@ $env:ARDUINO_DIRECTORIES_DATA = "D:\dev\arduino_pack"
 $env:ARDUINO_DIRECTORIES_USER = "D:\dev\arduino_pack\user"
 
 # 编译
-arduino-cli compile --fqbn esp32:esp32:makergo_c3_supermini --build-path "D:\dev\arduino_pack\build" "D:\dev\sms_forwarding\code"
+arduino-cli compile --fqbn esp32:esp32:esp32c3:FlashSize=4M,PartitionScheme=huge_app --build-path "D:\dev\arduino_pack\build" "D:\dev\sms_forwarding\code"
 
 # 烧录
-arduino-cli upload --fqbn esp32:esp32:makergo_c3_supermini --port COM4 --input-dir "D:\dev\arduino_pack\build" "D:\dev\sms_forwarding\code"
+arduino-cli upload --fqbn esp32:esp32:esp32c3:FlashSize=4M,PartitionScheme=huge_app --port COM4 --input-dir "D:\dev\arduino_pack\build" "D:\dev\sms_forwarding\code"
 
 # 串口监视
 arduino-cli monitor --port COM4 --config 115200
@@ -110,8 +118,8 @@ loop()
 - **PDU 模式** 而非 Text 模式：中文短信必须使用 PDU 编码
 - **CGACT 默认关闭**：启动时主动禁用 4G 数据连接，避免意外流量消耗（Ping 功能会临时激活）
 - **NVS 持久化**：所有配置存储在 ESP32 非易失存储中，断电不丢失
-- **单页应用 (SPA)**：Web UI 采用侧边栏 + 面板切换，所有功能在一个 HTML 页面中，通过 JS 切换可见面板
+- **纯 REST API**：固件只返回 JSON，不再构造大型 HTML `String`
 - **日志行缓冲**：`logCapture()` 将输出追加到行缓冲区，仅 `logCaptureLn()` 提交整行到环形缓冲区，避免非换行输出被误拆成多行
-- **日志环形缓冲区**：120 行容量，循环覆盖，通过 `/log` 端点以 JSON 返回，Web 端每 2 秒自动刷新
+- **日志环形缓冲区**：60 行容量，循环覆盖，通过 `/api/v1/logs` 返回
 - **模块化设计**：每个 .h/.cpp 对承担单一职责，便于增减功能和问题定位
-- **HTML 模板分离**：HTML 字符串常量单独存于 `web_html.cpp`，便于 UI 修改而不影响逻辑代码
+- **按需 BLE**：联网五分钟后关闭 BLE 并释放内存，WiFi 失联时重新开启

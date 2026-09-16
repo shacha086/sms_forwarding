@@ -123,8 +123,31 @@ https://jihulab.com/esp-mirror/espressif/arduino-esp32/-/raw/gh-pages/package_es
 lib：
 - **ReadyMail** by Mobizt
 - **pdulib** by David Henry
+- **NimBLE-Arduino** by h2zero（BLE 配网，建议 2.3.7）
+
+当前固件使用纯 JSON REST API，不再把管理网页打包进固件。REST 路径与 BLE
+Characteristic UUID 见 [`dev_doc/rest_ble_api.md`](dev_doc/rest_ble_api.md)。WiFi 可通过
+BLE 或 `/api/v1/wifi` 动态切换，并保存到 NVS。首次启动需通过蓝牙配网，
+固件不再内置 WiFi 名称和密码；后续启动自动使用已保存的凭据。
+
+管理页已改为 React + TypeScript + Vite 工程，源码和维护说明位于 [`web/`](web/README.md)。
+进入 `web` 目录执行 `npm install`、`npm run build`，然后将生成的 `web/dist` 部署到
+`sms.ctree.site`。设备根路径会自动跳转到 `https://sms.ctree.site/#设备IP`；REST API
+仅允许该站点通过 CORS 跨域访问。
 
 需要在`Arduino IDE`中安装ESP32开发板支持，参考[官方文档](https://docs.espressif.com/projects/arduino-esp32/en/latest/installing.html)，版型选`MakerGO ESP32 C3 SuperMini`。
+
+工程内置 `code/partitions.csv`，为 4 MB Flash 分配 3 MB 单应用空间。Arduino 构建系统
+会自动采用该分区表，但编译后的容量检查仍使用开发板选项中的应用空间上限。
+因此还需选择 **4 MB Flash** 和 **Huge APP (3MB No OTA/1MB SPIFFS)**，否则仍会按
+默认 1.25 MB 上限报 `Sketch too big`。实际分区布局以 `code/partitions.csv` 为准。
+该方案不支持 OTA，但 USB 串口烧录不受影响。若开发板并非 4 MB Flash，请勿直接使用此分区表。
+
+与 GitHub Actions 一致的 CLI 编译命令：
+
+```sh
+arduino-cli compile --fqbn esp32:esp32:esp32c3:FlashSize=4M,PartitionScheme=huge_app ./code
+```
 
 ## 保号
 需要定时发送短信或消耗一点流量进行保号也很简单。（Linux为例）
