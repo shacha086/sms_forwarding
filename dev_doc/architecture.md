@@ -1,5 +1,8 @@
 # 系统架构
 
+> 本文部分 SPA 图示是历史设计。当前管理面已改为纯 REST API，BLE/WiFi 流程和
+> 最新接口请以 [`rest_ble_api.md`](rest_ble_api.md) 为准。
+
 ## 模块依赖关系
 
 ```

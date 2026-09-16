@@ -319,7 +319,7 @@ logCaptureLn(String(phoneNumber));
 ```json
 ["行1", "行2", "行3", ...]
 ```
-**鉴权**: 需要 HTTP Basic Auth。最多返回 120 行（环形缓冲区容量）。
+**鉴权**: 需要 HTTP Basic Auth。最多返回 60 行（环形缓冲区容量）。
 
 ---
 

@@ -1,5 +1,8 @@
 # 模块详解 — 逐文件源码指南
 
+> `web_html` 与 SPA 章节是历史实现记录；当前固件已排除内嵌页面，改用纯 REST API。
+> BLE 动态配网和最新路由见 [`rest_ble_api.md`](rest_ble_api.md)。
+
 ---
 
 ## code.ino — 主入口

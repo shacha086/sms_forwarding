@@ -1,15 +1,12 @@
 #include "globals.h"
-#include "wifi_config.h"
 #include "config.h"
 #include "web_handlers.h"
-#include "web_handlers.h"
 #include "modem.h"
-#include "web_handlers.h"
 #include "push.h"
-#include "web_handlers.h"
 #include "sms_process.h"
-#include "web_handlers.h"
 #include "esim.h"
+#include "wifi_manager.h"
+#include "ble_provisioning.h"
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -24,37 +21,12 @@ void setup() {
   while (Serial1.available()) Serial1.read();
   initConcatBuffer();
   loadConfig();
+  loadWiFiCredentials();
   configValid = isConfigValid();
+  bleProvisioningBegin();
 
-  // ---- WiFi 连接优化 ----
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);                    // 关闭 Modem Sleep，提高连接响应速度
-  WiFi.setAutoReconnect(true);             // 断线后自动重连
-  // 使用快速扫描而非全信道扫描（全信道扫描在空信道上等待超时极慢）
-  // 首次连接成功后 ESP32 会自动记住信道，下次启动更快
-  WiFi.setScanMethod(WIFI_FAST_SCAN);
-  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  logCaptureLn(String("连接wifi: ") + String(WIFI_SSID));
-
-  // 带超时的等待连接，失败则重启重试
-  unsigned long wifiStart = millis();
-  const unsigned long WIFI_TIMEOUT = 20000; // 20秒超时
-  while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < WIFI_TIMEOUT) {
-    blink_short(200);
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    logCaptureLn(String("wifi已连接"));
-    logCapture(String("IP地址: "));
-    logCaptureLn(WiFi.localIP().toString());
-    logCapture(String("信号强度(RSSI): "));
-    logCaptureLn(String(WiFi.RSSI()) + " dBm");
-  } else {
-    logCaptureLn(String("⚠️ WiFi连接超时，即将重启重试..."));
-    delay(1000);
-    ESP.restart();
-  }
+  // WiFi 失败时保持运行并继续提供 BLE 配网，不再进入重启循环。
+  connectConfiguredWiFi(20000);
 
   server.on("/", handleRoot);
   server.on("/save", HTTP_POST, handleSave);
@@ -69,6 +41,24 @@ void setup() {
   server.on("/modem", handleModem);
   server.on("/wifi", handleWifi);
   server.on("/esim", handleESim);
+  // Versioned REST aliases. Legacy routes above remain available for clients.
+  server.on("/api/v1/status", HTTP_GET, handleStatus);
+  server.on("/api/v1/config", HTTP_GET, handleConfigGet);
+  server.on("/api/v1/config", HTTP_POST, handleSave);
+  server.on("/api/v1/sms", HTTP_POST, handleSendSms);
+  server.on("/api/v1/ping", HTTP_POST, handlePing);
+  server.on("/api/v1/wifi", HTTP_POST, handleWifi);
+  server.on("/api/v1/logs", HTTP_GET, handleLog);
+  const char* corsPaths[] = {
+    "/api/v1/status", "/api/v1/config", "/api/v1/sms", "/api/v1/ping",
+    "/api/v1/wifi", "/api/v1/logs", "/query", "/flight", "/at", "/log",
+    "/modem", "/wifi", "/esim", "/sendsms", "/ping", "/save"
+  };
+  for (const char* path : corsPaths) {
+    server.on(path, HTTP_OPTIONS, handleCorsPreflight);
+  }
+  const char* collectedHeaders[] = {"Origin", "Access-Control-Request-Private-Network"};
+  server.collectHeaders(collectedHeaders, 2);
   server.begin();
   logCaptureLn(String("HTTP服务器已启动"));
 
@@ -124,6 +114,8 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  maintainWiFiConnection();
+  bleProvisioningLoop();
   if (!configValid) {
     if (millis() - lastPrintTime >= 1000) {
       lastPrintTime = millis();

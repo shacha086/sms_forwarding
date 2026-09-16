@@ -1,16 +1,29 @@
 #include "web_handlers.h"
-#include "web_html.h"
 #include "config.h"
 #include "modem.h"
 #include "push.h"
-#include "wifi_config.h"
 #include "esim.h"
+#include "wifi_manager.h"
+#include "ble_provisioning.h"
 
 // ---- 日志环形缓冲区 ----
 String logBuffer[LOG_BUF_SIZE];
 int logBufIdx = 0;
 int logBufCount = 0;
 static String _logLine;  // 行缓冲：logCapture 写入这里，logCaptureLn 提交整行
+
+static bool isAllowedOrigin(const String& origin) {
+  return origin == "https://sms.ctree.site" || origin == "http://sms.ctree.site";
+}
+
+static void addCorsHeaders() {
+  String origin = server.header("Origin");
+  if (!isAllowedOrigin(origin)) return;
+  server.sendHeader("Access-Control-Allow-Origin", origin);
+  server.sendHeader("Access-Control-Allow-Credentials", "true");
+  server.sendHeader("Access-Control-Allow-Private-Network", "true");
+  server.sendHeader("Vary", "Origin");
+}
 
 static void _logAppend(const String& line) {
   logBuffer[logBufIdx] = line;
@@ -65,6 +78,7 @@ void logCaptureLn(const char* msg) {
 
 // 检查HTTP Basic认证
 bool checkAuth() {
+  addCorsHeaders();
   if (!server.authenticate(config.webUser.c_str(), config.webPass.c_str())) {
     server.requestAuthentication(BASIC_AUTH, "SMS Forwarding", "请输入管理员账号密码");
     return false;
@@ -72,6 +86,10 @@ bool checkAuth() {
   return true;
 }
 
+// The old embedded UI is intentionally excluded from the firmware. Keeping
+// the source below for now makes the REST migration easy to review and avoids
+// breaking downstream forks that may still carry UI customizations.
+#if 0
 // HTML 属性/文本转义，防止配置值中的引号等破坏页面结构
 static String htmlEscape(const String& s) {
   String r;
@@ -211,6 +229,82 @@ void handleRoot() {
   html.replace("%PUSH_CHANNELS%", channelsHtml);
   
   server.send(200, "text/html", html);
+}
+#endif
+
+static bool isValidPushType(int typeVal) {
+  return typeVal >= PUSH_TYPE_POST_JSON && typeVal <= PUSH_TYPE_TELEGRAM;
+}
+
+// 轻量状态入口，不再构造和复制约 44 KB 的内嵌 HTML。
+void handleStatus() {
+  if (!checkAuth()) return;
+
+  String json;
+  json.reserve(320);
+  json = "{\"service\":\"sms-forwarding\",\"apiVersion\":1";
+  json += ",\"uptimeSeconds\":" + String(millis() / 1000);
+  json += ",\"freeHeap\":" + String(ESP.getFreeHeap());
+  json += ",\"modemReady\":" + String(modemReady ? "true" : "false");
+  json += ",\"configValid\":" + String(configValid ? "true" : "false");
+  json += ",\"bleProvisioning\":" + String(isBleProvisioningActive() ? "true" : "false");
+  json += ",\"wifi\":{\"connected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
+  json += ",\"ssid\":\"" + jsonEscape(getConfiguredWiFiSsid()) + "\"";
+  if (WiFi.status() == WL_CONNECTED) {
+    json += ",\"ip\":\"" + WiFi.localIP().toString() + "\"";
+    json += ",\"rssi\":" + String(WiFi.RSSI());
+  }
+  json += "},\"endpoints\":{\"config\":\"/api/v1/config\",\"sms\":\"/api/v1/sms\",\"wifi\":\"/api/v1/wifi\",\"logs\":\"/api/v1/logs\"}}";
+  server.send(200, "application/json", json);
+}
+
+void handleRoot() {
+  String target = "https://sms.ctree.site/#" + WiFi.localIP().toString();
+  server.sendHeader("Location", target, true);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(302, "text/plain", "Open the SMS Forwarding dashboard");
+}
+
+void handleCorsPreflight() {
+  String origin = server.header("Origin");
+  if (!isAllowedOrigin(origin)) {
+    server.send(403, "application/json", "{\"success\":false,\"message\":\"origin not allowed\"}");
+    return;
+  }
+  addCorsHeaders();
+  server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  server.sendHeader("Access-Control-Max-Age", "600");
+  server.send(204, "text/plain", "");
+}
+
+void handleConfigGet() {
+  if (!checkAuth()) return;
+
+  String json;
+  json.reserve(768);
+  json = "{\"webUser\":\"" + jsonEscape(config.webUser) + "\"";
+  json += ",\"smtpServer\":\"" + jsonEscape(config.smtpServer) + "\"";
+  json += ",\"smtpPort\":" + String(config.smtpPort);
+  json += ",\"smtpUser\":\"" + jsonEscape(config.smtpUser) + "\"";
+  json += ",\"smtpPasswordSet\":" + String(config.smtpPass.length() > 0 ? "true" : "false");
+  json += ",\"smtpSendTo\":\"" + jsonEscape(config.smtpSendTo) + "\"";
+  json += ",\"adminPhone\":\"" + jsonEscape(config.adminPhone) + "\"";
+  json += ",\"numberBlackList\":\"" + jsonEscape(config.numberBlackList) + "\"";
+  json += ",\"pushChannels\":[";
+  for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
+    if (i) json += ',';
+    const PushChannel& ch = config.pushChannels[i];
+    json += "{\"index\":" + String(i) + ",\"enabled\":" + String(ch.enabled ? "true" : "false");
+    json += ",\"type\":" + String((int)ch.type);
+    json += ",\"name\":\"" + jsonEscape(ch.name) + "\"";
+    json += ",\"url\":\"" + jsonEscape(ch.url) + "\"";
+    json += ",\"key1Set\":" + String(ch.key1.length() > 0 ? "true" : "false");
+    json += ",\"key2Set\":" + String(ch.key2.length() > 0 ? "true" : "false");
+    json += ",\"customBody\":\"" + jsonEscape(ch.customBody) + "\"}";
+  }
+  json += "]}";
+  server.send(200, "application/json", json);
 }
 
 // 处理工具箱页面请求 — 已整合到主页，直接返回主页
@@ -674,34 +768,9 @@ void handleSendSms() {
     resultMsg = success ? "短信发送成功！" : "短信发送失败，请检查模组状态";
   }
   
-  String html = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta http-equiv="refresh" content="3;url=/sms">
-  <title>发送结果</title>
-  <style>
-    body { font-family: Arial, sans-serif; text-align: center; padding-top: 100px; background: #f5f5f5; }
-    .result { padding: 20px; border-radius: 10px; display: inline-block; }
-    .success { background: #4CAF50; color: white; }
-    .error { background: #f44336; color: white; }
-  </style>
-</head>
-<body>
-  <div class="result %CLASS%">
-    <h2>%ICON% %MSG%</h2>
-    <p>3秒后返回发送页面...</p>
-  </div>
-</body>
-</html>
-)rawliteral";
-  
-  html.replace("%CLASS%", success ? "success" : "error");
-  html.replace("%ICON%", success ? "✅" : "❌");
-  html.replace("%MSG%", resultMsg);
-  
-  server.send(200, "text/html", html);
+  String json = "{\"success\":" + String(success ? "true" : "false") +
+                ",\"message\":\"" + jsonEscape(resultMsg) + "\"}";
+  server.send(success ? 200 : 400, "application/json", json);
 }
 
 // 处理Ping请求
@@ -938,18 +1007,21 @@ void handleSave() {
     if (server.hasArg(enKey) || server.hasArg(typeKey) || server.hasArg(urlKey) ||
         server.hasArg(nameKey) || server.hasArg(k1Key) || server.hasArg(k2Key) ||
         server.hasArg(bodyKey)) {
-      config.pushChannels[i].enabled = server.hasArg(enKey) && server.arg(enKey) == "on";
+      if (server.hasArg(enKey)) {
+        String enabledValue = server.arg(enKey);
+        config.pushChannels[i].enabled = enabledValue == "on" || enabledValue == "true" || enabledValue == "1";
+      }
       if (server.hasArg(typeKey)) {
         int typeVal = server.arg(typeKey).toInt();
         if (isValidPushType(typeVal)) {
           config.pushChannels[i].type = (PushType)typeVal;
         }
       }
-      config.pushChannels[i].url = server.arg(urlKey);
-      config.pushChannels[i].name = server.arg(nameKey);
-      config.pushChannels[i].key1 = server.arg(k1Key);
-      config.pushChannels[i].key2 = server.arg(k2Key);
-      config.pushChannels[i].customBody = server.arg(bodyKey);
+      if (server.hasArg(urlKey)) config.pushChannels[i].url = server.arg(urlKey);
+      if (server.hasArg(nameKey)) config.pushChannels[i].name = server.arg(nameKey);
+      if (server.hasArg(k1Key)) config.pushChannels[i].key1 = server.arg(k1Key);
+      if (server.hasArg(k2Key)) config.pushChannels[i].key2 = server.arg(k2Key);
+      if (server.hasArg(bodyKey)) config.pushChannels[i].customBody = server.arg(bodyKey);
       if (config.pushChannels[i].name.length() == 0) {
         config.pushChannels[i].name = "通道" + String(i + 1);
       }
@@ -959,28 +1031,7 @@ void handleSave() {
   saveConfig();
   configValid = isConfigValid();
   
-  String html = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta http-equiv="refresh" content="3;url=/">
-  <title>保存成功</title>
-  <style>
-    body { font-family: Arial, sans-serif; text-align: center; padding-top: 100px; background: #f5f5f5; }
-    .success { background: #4CAF50; color: white; padding: 20px; border-radius: 10px; display: inline-block; }
-  </style>
-</head>
-<body>
-  <div class="success">
-    <h2>✅ 配置保存成功！</h2>
-    <p>3秒后返回配置页面...</p>
-    <p>如果修改了账号密码，请使用新的账号密码登录</p>
-  </div>
-</body>
-</html>
-)rawliteral";
-  server.send(200, "text/html", html);
+  server.send(200, "application/json", "{\"success\":true,\"message\":\"configuration saved\"}");
   
   // 如果配置有效，发送启动通知
   if (configValid) {
@@ -1167,26 +1218,25 @@ void handleWifi() {
   busy = true;
 
   String action = server.arg("action");
-  if (action == "restart") {
+  if (action == "connect") {
+    String ssid = server.arg("ssid");
+    String password = server.arg("password");
+    if (!saveWiFiCredentials(ssid, password)) {
+      server.send(400, "application/json", "{\"success\":false,\"message\":\"invalid WiFi credentials\"}");
+    } else {
+      // Acknowledge before leaving the current AP; otherwise the HTTP response
+      // is lost as soon as the station disconnects.
+      server.send(202, "application/json", "{\"success\":true,\"message\":\"WiFi switch started; query status on the new network\"}");
+      delay(200);
+      connectConfiguredWiFi(15000);
+    }
+  } else if (action == "enable_ble") {
+    bleProvisioningBegin();
+    server.send(200, "application/json", "{\"success\":true,\"message\":\"BLE provisioning enabled\"}");
+  } else if (action == "restart") {
     logCaptureLn(String("网页端请求重启WiFi..."));
     server.send(200, "application/json", "{\"success\":true,\"message\":\"WiFi 正在重启，请等待约 5 秒后刷新页面\"}");
-    WiFi.disconnect(true);
-    delay(500);
-    WiFi.setSleep(false);
-    WiFi.setAutoReconnect(true);
-    WiFi.setScanMethod(WIFI_FAST_SCAN);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    logCaptureLn(String("正在重新连接WiFi: " + String(WIFI_SSID)));
-    unsigned long start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
-      delay(50);
-      server.handleClient();
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-      logCaptureLn(String("WiFi 重连成功, IP: " + WiFi.localIP().toString()));
-    } else {
-      logCaptureLn(String("WiFi 重连失败，将在后台持续尝试"));
-    }
+    connectConfiguredWiFi(15000);
   } else {
     server.send(200, "application/json", "{\"success\":false,\"message\":\"未知操作\"}");
   }
