@@ -138,8 +138,16 @@ BLE 或 `/api/v1/wifi` 动态切换，并保存到 NVS。首次启动需通过�
 需要在`Arduino IDE`中安装ESP32开发板支持，参考[官方文档](https://docs.espressif.com/projects/arduino-esp32/en/latest/installing.html)，版型选`MakerGO ESP32 C3 SuperMini`。
 
 工程内置 `code/partitions.csv`，为 4 MB Flash 分配 3 MB 单应用空间。Arduino 构建系统
-会自动采用该分区表，解决加入 BLE 后默认 1.25 MB 应用分区不足的问题。该方案不支持
-OTA，但 USB 串口烧录不受影响。若开发板并非 4 MB Flash，请勿直接使用此分区表。
+会自动采用该分区表，但编译后的容量检查仍使用开发板选项中的应用空间上限。
+因此还需选择 **4 MB Flash** 和 **Huge APP (3MB No OTA/1MB SPIFFS)**，否则仍会按
+默认 1.25 MB 上限报 `Sketch too big`。实际分区布局以 `code/partitions.csv` 为准。
+该方案不支持 OTA，但 USB 串口烧录不受影响。若开发板并非 4 MB Flash，请勿直接使用此分区表。
+
+与 GitHub Actions 一致的 CLI 编译命令：
+
+```sh
+arduino-cli compile --fqbn esp32:esp32:esp32c3:FlashSize=4M,PartitionScheme=huge_app ./code
+```
 
 ## 保号
 需要定时发送短信或消耗一点流量进行保号也很简单。（Linux为例）

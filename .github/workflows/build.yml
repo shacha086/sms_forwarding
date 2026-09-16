@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'code/**'
+      - '.github/workflows/build.yml'
   pull_request:
   workflow_dispatch:
 
@@ -33,4 +34,5 @@ jobs:
     
     - name: Compile firmware
       run: |
-        arduino-cli compile --fqbn esp32:esp32:esp32c3 ./code
+        # Match the size check to the 3 MB application in code/partitions.csv.
+        arduino-cli compile --fqbn esp32:esp32:esp32c3:FlashSize=4M,PartitionScheme=huge_app ./code

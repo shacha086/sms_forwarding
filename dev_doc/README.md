@@ -71,6 +71,9 @@ code/
 
 `code/partitions.csv` 定义了 3 MB 单应用分区（无 OTA），适用于本项目使用的 4 MB
 ESP32-C3 SuperMini。Arduino IDE/CLI 会在编译时自动选择草图目录中的自定义分区表。
+容量检查不会自动从该 CSV 更新上限，还需设置 `FlashSize=4M,PartitionScheme=huge_app`，
+使应用容量上限与 CSV 中的 `0x300000`（3145728 字节）一致。IDE 中选择 4 MB Flash
+及 Huge APP；以下 CLI 示例使用与 CI 一致的通用 ESP32-C3 开发板定义。
 
 ```powershell
 # 设置环境
@@ -79,10 +82,10 @@ $env:ARDUINO_DIRECTORIES_DATA = "D:\dev\arduino_pack"
 $env:ARDUINO_DIRECTORIES_USER = "D:\dev\arduino_pack\user"
 
 # 编译
-arduino-cli compile --fqbn esp32:esp32:makergo_c3_supermini --build-path "D:\dev\arduino_pack\build" "D:\dev\sms_forwarding\code"
+arduino-cli compile --fqbn esp32:esp32:esp32c3:FlashSize=4M,PartitionScheme=huge_app --build-path "D:\dev\arduino_pack\build" "D:\dev\sms_forwarding\code"
 
 # 烧录
-arduino-cli upload --fqbn esp32:esp32:makergo_c3_supermini --port COM4 --input-dir "D:\dev\arduino_pack\build" "D:\dev\sms_forwarding\code"
+arduino-cli upload --fqbn esp32:esp32:esp32c3:FlashSize=4M,PartitionScheme=huge_app --port COM4 --input-dir "D:\dev\arduino_pack\build" "D:\dev\sms_forwarding\code"
 
 # 串口监视
 arduino-cli monitor --port COM4 --config 115200
