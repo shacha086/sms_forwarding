@@ -53,10 +53,10 @@
    ├── server.on("/sms", handleRoot)                         # 兼容旧链接
    ├── server.on("/sendsms", HTTP_POST, handleSendSms)
    ├── server.on("/ping", HTTP_POST, handlePing)
-   ├── server.on("/query", handleQuery)
-   ├── server.on("/flight", handleFlightMode)
-   ├── server.on("/at", handleATCommand)
-   ├── server.on("/log", handleLog)                          # 系统日志 JSON
+   ├── server.on("/query", HTTP_GET, handleQuery)
+   ├── server.on("/flight", HTTP_GET, handleFlightMode)
+   ├── server.on("/at", HTTP_GET, handleATCommand)
+   ├── server.on("/log", HTTP_GET, handleLog)                # 系统日志 JSON
    └── server.begin()
 
 9. 启动通知

@@ -28,19 +28,23 @@ void setup() {
   // WiFi 失败时保持运行并继续提供 BLE 配网，不再进入重启循环。
   connectConfiguredWiFi(20000);
 
-  server.on("/", handleRoot);
+  server.on("/", HTTP_GET, handleRoot);
   server.on("/save", HTTP_POST, handleSave);
-  server.on("/tools", handleRoot);
-  server.on("/sms", handleRoot);
+  server.on("/tools", HTTP_GET, handleRoot);
+  server.on("/sms", HTTP_GET, handleRoot);
   server.on("/sendsms", HTTP_POST, handleSendSms);
   server.on("/ping", HTTP_POST, handlePing);
-  server.on("/query", handleQuery);
-  server.on("/flight", handleFlightMode);
-  server.on("/at", handleATCommand);
-  server.on("/log", handleLog);
-  server.on("/modem", handleModem);
-  server.on("/wifi", handleWifi);
-  server.on("/esim", handleESim);
+  // Keep legacy endpoints method-specific. An HTTP_ANY handler registered
+  // before the CORS handlers also catches OPTIONS and challenges the browser
+  // for Basic Auth, so cross-origin requests never get past preflight.
+  server.on("/query", HTTP_GET, handleQuery);
+  server.on("/flight", HTTP_GET, handleFlightMode);
+  server.on("/at", HTTP_GET, handleATCommand);
+  server.on("/log", HTTP_GET, handleLog);
+  server.on("/modem", HTTP_GET, handleModem);
+  server.on("/wifi", HTTP_GET, handleWifi);
+  server.on("/wifi", HTTP_POST, handleWifi);
+  server.on("/esim", HTTP_GET, handleESim);
   // Versioned REST aliases. Legacy routes above remain available for clients.
   server.on("/api/v1/status", HTTP_GET, handleStatus);
   server.on("/api/v1/config", HTTP_GET, handleConfigGet);

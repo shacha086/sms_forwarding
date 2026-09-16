@@ -561,7 +561,7 @@ void handleQuery() {
       message = "查询失败";
     }
   }
-  else if (type == "siminfo") {
+  else if (type == "siminfo" || type == "sim") {
     // SIM卡信息查询
     success = true;
     message = "<table class='info-table'>";
