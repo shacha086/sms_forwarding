@@ -98,16 +98,20 @@ void setup() {
   modemInit();
 
   // ---- eSIM初始化 ----
-  logCaptureLn(String("初始化eSIM..."));
-  if (esimInit()) {
-    logCaptureLn(String("eSIM初始化成功"));
-    char eid[40];
-    if (esimGetEID(eid, sizeof(eid))) {
-      logCapture(String("EID: "));
-      logCaptureLn(eid);
-    }
+  if (modemLimitedMode) {
+    logCaptureLn(String("限制模式：跳过 eSIM 初始化"));
   } else {
-    logCaptureLn(String("eSIM初始化失败或未检测到eUICC芯片"));
+    logCaptureLn(String("初始化eSIM..."));
+    if (esimInit()) {
+      logCaptureLn(String("eSIM初始化成功"));
+      char eid[40];
+      if (esimGetEID(eid, sizeof(eid))) {
+        logCapture(String("EID: "));
+        logCaptureLn(eid);
+      }
+    } else {
+      logCaptureLn(String("eSIM初始化失败或未检测到eUICC芯片"));
+    }
   }
 
 }
