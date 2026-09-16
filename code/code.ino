@@ -119,7 +119,7 @@ void loop() {
   if (!configValid) {
     if (millis() - lastPrintTime >= 1000) {
       lastPrintTime = millis();
-      logCaptureLn(String("⚠️ 请访问 " + getDeviceUrl() + " 配置系统参数"));
+      logCaptureLn(String("⚠️ 请访问 " + getDeviceUrl() + " 配置系统参数（至少配置邮件或任一推送通道）"));
     }
   }
   checkConcatTimeout();
