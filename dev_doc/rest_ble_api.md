@@ -57,10 +57,12 @@ curl -u admin:admin123 -X POST http://DEVICE_IP/api/v1/wifi \
 
 ## BLE 配网
 
-设备开机后开启 BLE 配网。WiFi 正常连接五分钟后 BLE 会自动关闭并释放 RAM；WiFi
-失联时会自动重新开启。也可以通过 REST API 的 `enable_ble` 动作重新开启。
+设备开机后开启 BLE。由于同一个 NimBLE Server 还提供 NekokoLPA2 RED BLE v1
+读卡服务，WiFi 连接后 BLE 会保持运行；断开连接后自动恢复广播。也可以通过 REST API
+的 `enable_ble` 动作重新开启。
 
-- BLE 名称：`SMS-xxxxxx`
+- BLE 名称：未连接时每 1.5 秒在 `ESTKme-XXXXXX` 与 `SMS-XXXXXX` 间轮换；
+  连接后停止切换（任何名称都不能包含 `ESTKme RED`）
 - 配对 PIN：`123456`（可通过 `BLE_PROVISIONING_PASSKEY` 编译宏覆盖）
 - Service UUID：`7d2ea28a-f7bd-485a-bd9d-92ad6ecfe93e`
 
@@ -75,3 +77,9 @@ curl -u admin:admin123 -X POST http://DEVICE_IP/api/v1/wifi \
 `connect`，然后读取或订阅 Status。凭据会保存到 ESP32 NVS，重启后继续使用。
 首次启动或 NVS 中没有 WiFi 凭据时，设备等待 BLE 配网，不使用硬编码的默认网络。
 已联网设备仍可通过 REST API 更新凭据。
+
+## NekokoLPA2 RED BLE v1
+
+同一设备还广播短服务 UUID `0x4553`。RED 服务本身不要求加密配对；配网特征仍要求
+PIN 和加密连接。完整协议、缓冲区和测试方法见
+[`nekokolpa2_red_ble.md`](nekokolpa2_red_ble.md)。

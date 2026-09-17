@@ -6,6 +6,7 @@
 
 #include "web_handlers.h"
 #include "wifi_manager.h"
+#include "red_ble.h"
 
 // Service: WiFi provisioning
 // SSID and password are staged separately; writing "connect" applies both.
@@ -24,8 +25,34 @@ static char stagedSsid[33] = {0};
 static char stagedPassword[64] = {0};
 static volatile bool connectRequested = false;
 static bool bleActive = false;
-static unsigned long bleStartedAt = 0;
+static NimBLEServer* bleServer = nullptr;
+static String bleDeviceSuffix;
+static bool advertisingRedName = true;
+static unsigned long lastAdvertisingNameSwitchAt = 0;
 static portMUX_TYPE provisioningMux = portMUX_INITIALIZER_UNLOCKED;
+
+static const unsigned long ADVERTISING_NAME_INTERVAL_MS = 1500;
+
+static String advertisedDeviceName(bool redName) {
+  return String(redName ? "ESTKme-" : "SMS-") + bleDeviceSuffix;
+}
+
+static bool applyAdvertisingName(bool redName, bool refresh) {
+  NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
+  if (!advertising) return false;
+
+  // NimBLEAdvertisementData::setName appends a field.  Rebuild both legacy
+  // advertising payloads so repeated name changes never accumulate fields.
+  advertising->clearData();
+  advertising->enableScanResponse(true);
+  const bool redServiceAdded = advertising->addServiceUUID("4553");
+  const bool provisioningServiceAdded = advertising->addServiceUUID(SERVICE_UUID);
+  const String name = advertisedDeviceName(redName);
+  const bool nameSet = advertising->setName(name.c_str());
+  NimBLEDevice::setDeviceName(name.c_str());
+  const bool refreshed = !refresh || advertising->refreshAdvertisingData();
+  return redServiceAdded && nameSet && refreshed && provisioningServiceAdded;
+}
 
 static String escapeJson(const String& value) {
   String escaped;
@@ -90,19 +117,60 @@ class ProvisioningCharacteristicCallbacks : public NimBLECharacteristicCallbacks
 
 static ProvisioningCharacteristicCallbacks provisioningCallbacks;
 
+class SharedServerCallbacks : public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer* server, NimBLEConnInfo& connInfo) override {
+    (void)server;
+    redBleOnConnect(connInfo.getConnHandle(), connInfo.getMTU());
+  }
+
+  void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override {
+    (void)server;
+    (void)reason;
+    redBleOnDisconnect(connInfo.getConnHandle());
+  }
+
+  void onMTUChange(uint16_t mtu, NimBLEConnInfo& connInfo) override {
+    redBleOnMtuChange(connInfo.getConnHandle(), mtu);
+  }
+};
+
+static SharedServerCallbacks sharedServerCallbacks;
+
+static bool verifyGattService(NimBLEService* service) {
+  if (!service) return false;
+
+  const uint16_t handle = service->getHandle();
+  logCaptureLn(String("BLE GATT service=") + service->getUUID().toString().c_str() +
+               ", handle=" + String(handle));
+  bool registered = handle != 0;
+  for (const auto* characteristic : service->getCharacteristics()) {
+    const uint16_t valueHandle = characteristic->getHandle();
+    logCaptureLn(String("BLE GATT characteristic=") + characteristic->getUUID().toString().c_str() +
+                 ", handle=" + String(valueHandle));
+    if (valueHandle == 0) registered = false;
+  }
+  return registered;
+}
+
 void bleProvisioningBegin() {
   if (bleActive) return;
 
-  String deviceName = "SMS-" + String((uint32_t)(ESP.getEfuseMac() & 0xFFFFFF), HEX);
-  deviceName.toUpperCase();
+  logCaptureLn(String("BLE GATT check v1, build=") + __DATE__ + " " + __TIME__);
+  // NekokoLPA2 selects RED BLE v1 for names containing ESTKme but not
+  // "ESTKme RED".  Keep the suffix so multiple local devices are distinct.
+  bleDeviceSuffix = String((uint32_t)(ESP.getEfuseMac() & 0xFFFFFF), HEX);
+  bleDeviceSuffix.toUpperCase();
+  String deviceName = advertisedDeviceName(true);
   NimBLEDevice::init(deviceName.c_str());
+  NimBLEDevice::setMTU(247);
   NimBLEDevice::setSecurityAuth(true, true, true);
   NimBLEDevice::setSecurityIOCap(BLE_HS_IO_DISPLAY_ONLY);
   NimBLEDevice::setSecurityPasskey(BLE_PROVISIONING_PASSKEY);
 
-  NimBLEServer* server = NimBLEDevice::createServer();
-  server->advertiseOnDisconnect(true);
-  NimBLEService* service = server->createService(SERVICE_UUID);
+  bleServer = NimBLEDevice::createServer();
+  bleServer->setCallbacks(&sharedServerCallbacks, false);
+  bleServer->advertiseOnDisconnect(true);
+  NimBLEService* service = bleServer->createService(SERVICE_UUID);
 
   const uint16_t secureWrite = NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC;
   NimBLECharacteristic* ssid = service->createCharacteristic(SSID_UUID, secureWrite, 32);
@@ -115,32 +183,69 @@ void bleProvisioningBegin() {
   password->setCallbacks(&provisioningCallbacks);
   command->setCallbacks(&provisioningCallbacks);
   statusCharacteristic->setCallbacks(&provisioningCallbacks);
-  server->start();
+  // Register both services before starting GATT (required by NimBLE 2.3.7).
+  const bool provisioningRegistered = service->start();
+  NimBLEService* redService = provisioningRegistered ? redBleAddService(bleServer) : nullptr;
+  if (!provisioningRegistered || !redService) {
+    logCaptureLn(String("BLE service registration failed"));
+    NimBLEDevice::deinit(true);
+    statusCharacteristic = nullptr;
+    bleServer = nullptr;
+    return;
+  }
+  bleServer->start();
+
+  // NimBLE 2.3.7 start() returns void. Assigned handles confirm that GATT
+  // actually contains our services instead of trusting the advertising UUIDs.
+  const bool provisioningReady = verifyGattService(service);
+  const bool redReady = verifyGattService(redService);
+  if (!provisioningReady || !redReady) {
+    logCaptureLn(String("BLE GATT verification failed; advertising disabled"));
+    NimBLEDevice::deinit(true);
+    statusCharacteristic = nullptr;
+    bleServer = nullptr;
+    return;
+  }
+  logCaptureLn(String("BLE GATT verified: provisioning + RED 4553, address=") +
+               NimBLEDevice::getAddress().toString().c_str());
 
   NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
-  advertising->enableScanResponse(true);
-  bool serviceAdded = advertising->addServiceUUID(SERVICE_UUID);
-  bool nameSet = advertising->setName(deviceName.c_str());
+  advertisingRedName = true;
+  bool advertisingDataSet = applyAdvertisingName(advertisingRedName, false);
   bool started = advertising->start();
 
   if (!started) {
     logCaptureLn(String("BLE 广播启动失败"));
     NimBLEDevice::deinit(true);
     statusCharacteristic = nullptr;
+    bleServer = nullptr;
     return;
   }
-  if (!serviceAdded) logCaptureLn(String("⚠️ BLE 服务 UUID 未加入广播包"));
-  if (!nameSet) logCaptureLn(String("⚠️ BLE 设备名未加入广播包"));
+  if (!advertisingDataSet) logCaptureLn(String("⚠️ BLE 广播字段不完整"));
 
   bleActive = true;
-  bleStartedAt = millis();
-  logCaptureLn(String("BLE 配网已开启: ") + deviceName + ", PIN: " + String(BLE_PROVISIONING_PASSKEY));
+  lastAdvertisingNameSwitchAt = millis();
+  logCaptureLn(String("BLE 已开启: ESTKme-/SMS-") + bleDeviceSuffix + ", RED v1 + 配网, PIN: " + String(BLE_PROVISIONING_PASSKEY));
 }
 
 void bleProvisioningLoop() {
   if (!bleActive) {
     if (WiFi.status() != WL_CONNECTED) bleProvisioningBegin();
     return;
+  }
+
+  redBleLoop();
+
+  // A legacy advertisement has one local-name field.  While disconnected,
+  // alternate names so both NekokoLPA2 and the original provisioning UI can
+  // discover the same peripheral.  Freeze the name during a connection.
+  if (bleServer && bleServer->getConnectedCount() == 0 &&
+      millis() - lastAdvertisingNameSwitchAt >= ADVERTISING_NAME_INTERVAL_MS) {
+    advertisingRedName = !advertisingRedName;
+    if (!applyAdvertisingName(advertisingRedName, true)) {
+      logCaptureLn(String("BLE 广播名称切换失败"));
+    }
+    lastAdvertisingNameSwitchAt = millis();
   }
 
   bool shouldConnect = false;
@@ -167,14 +272,8 @@ void bleProvisioningLoop() {
     }
   }
 
-  // BLE is a provisioning channel, not a permanent service. Turn it off after
-  // five minutes on a healthy WiFi connection to reclaim controller/host RAM.
-  if (WiFi.status() == WL_CONNECTED && millis() - bleStartedAt > 300000) {
-    NimBLEDevice::deinit(true);
-    statusCharacteristic = nullptr;
-    bleActive = false;
-    logCaptureLn(String("BLE 配网窗口已关闭，重启设备可再次开启"));
-  }
+  // RED BLE is a reader service, so BLE must remain available after WiFi is
+  // connected.  advertiseOnDisconnect() restores connectable advertising.
 }
 
 bool isBleProvisioningActive() {

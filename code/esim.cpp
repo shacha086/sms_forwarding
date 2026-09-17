@@ -17,6 +17,7 @@ static const uint8_t ESIM_ISD_R_AID[] = {
 
 static char s_lastError[128] = "";
 static bool s_esimReady = false;
+static bool s_rawSessionReady = false;
 static int s_lastProfileResult = 0;
 
 struct TlvNode {
@@ -339,10 +340,10 @@ static bool parseAtPayload(const String& resp, const char* prefix, String* paylo
   return payload->length() > 0;
 }
 
-static bool parseCGLAHexPayload(const String& resp, String* hex) {
-  int idx = resp.indexOf("+CGLA:");
+static bool parseLengthPrefixedHexPayload(const String& resp, const char* prefix, String* hex) {
+  int idx = resp.indexOf(prefix);
   if (idx >= 0) {
-    int pos = idx + 6;
+    int pos = idx + strlen(prefix);
     while (pos < resp.length() && isspace((unsigned char)resp.charAt(pos))) pos++;
 
     int expectedChars = 0;
@@ -381,7 +382,7 @@ static bool parseCGLAHexPayload(const String& resp, String* hex) {
   }
 
   String payload;
-  if (!parseAtPayload(resp, "+CGLA:", &payload)) {
+  if (!parseAtPayload(resp, prefix, &payload)) {
     String extracted;
     if (extractLongestHexRun(resp, &extracted)) {
       *hex = extracted;
@@ -397,6 +398,119 @@ static bool parseCGLAHexPayload(const String& resp, String* hex) {
   }
   hex->trim();
   return hex->length() > 0;
+}
+
+static bool parseCGLAHexPayload(const String& resp, String* hex) {
+  return parseLengthPrefixedHexPayload(resp, "+CGLA:", hex);
+}
+
+static bool isStructurallyValidAtr(const uint8_t* atr, size_t length) {
+  if (!atr || length < 2 || (atr[0] != 0x3B && atr[0] != 0x3F)) return false;
+
+  size_t pos = 2;
+  uint8_t interfaceMask = atr[1] >> 4;
+  const size_t historicalLength = atr[1] & 0x0F;
+  bool tckRequired = false;
+
+  while (interfaceMask != 0) {
+    if (interfaceMask & 0x01) {
+      if (pos >= length) return false;
+      pos++;  // TAi
+    }
+    if (interfaceMask & 0x02) {
+      if (pos >= length) return false;
+      pos++;  // TBi
+    }
+    if (interfaceMask & 0x04) {
+      if (pos >= length) return false;
+      pos++;  // TCi
+    }
+    if (interfaceMask & 0x08) {
+      if (pos >= length) return false;
+      const uint8_t td = atr[pos++];
+      const uint8_t protocol = td & 0x0F;
+      // T=15 introduces global interface bytes; it is not itself a transport
+      // protocol and therefore does not make TCK mandatory.
+      if (protocol != 0 && protocol != 15) tckRequired = true;
+      interfaceMask = td >> 4;
+    } else {
+      interfaceMask = 0;
+    }
+  }
+
+  if (historicalLength > length - pos) return false;
+  pos += historicalLength;
+  if (tckRequired) {
+    if (pos >= length) return false;
+    pos++;
+  }
+  if (pos != length) return false;
+  if (tckRequired) {
+    uint8_t checksum = 0;
+    for (size_t i = 1; i < length; ++i) checksum ^= atr[i];
+    if (checksum != 0) return false;
+  }
+  return true;
+}
+
+static bool parseGatrResponse(const String& resp, uint8_t* atr, size_t atrCapacity, size_t* atrLen) {
+  if (!atr || !atrLen || atrCapacity == 0) return false;
+  *atrLen = 0;
+
+  const int prefixPos = resp.indexOf("*GATR:");
+  if (prefixPos < 0) return false;
+  int pos = prefixPos + 6;
+  int end = resp.indexOf('\n', pos);
+  if (end < 0) end = resp.length();
+  String payload = resp.substring(pos, end);
+  payload.trim();
+
+  // Current ML307A firmware returns *GATR:<ATR_HEX> with no length field.
+  // Retain compatibility with older ASR variants documented as
+  // *GATR:<data_len>,<ATR_HEX>, without requiring the trailing OK line.
+  String data = payload;
+  size_t declaredLength = 0;
+  bool hasDeclaredLength = false;
+  const int comma = payload.indexOf(',');
+  if (comma >= 0) {
+    String lengthText = payload.substring(0, comma);
+    lengthText.trim();
+    if (lengthText.length() == 0) return false;
+    for (int i = 0; i < lengthText.length(); ++i) {
+      const char c = lengthText.charAt(i);
+      if (!isdigit((unsigned char)c)) return false;
+      hasDeclaredLength = true;
+      declaredLength = declaredLength * 10 + (c - '0');
+    }
+    data = payload.substring(comma + 1);
+    data.trim();
+  }
+  if (data.length() >= 2 && data.charAt(0) == '"' && data.charAt(data.length() - 1) == '"') {
+    data = data.substring(1, data.length() - 1);
+  }
+
+  String hex;
+  hex.reserve(data.length());
+  for (int i = 0; i < data.length(); ++i) {
+    const char c = data.charAt(i);
+    if (isHexChar(c)) hex += c;
+  }
+  if (!isHexString(hex)) return false;
+
+  // For legacy length-prefixed variants, accept a byte count or a printable
+  // HEX-character count.  Current ML307A responses do not enter this branch.
+  if (hasDeclaredLength && declaredLength != (size_t)hex.length() &&
+      declaredLength * 2 != (size_t)hex.length()) {
+    return false;
+  }
+
+  const size_t byteLength = hex.length() / 2;
+  if (byteLength > atrCapacity || !hexToBytes(hex, atr, atrCapacity, atrLen)) return false;
+  if (!isStructurallyValidAtr(atr, *atrLen)) {
+    *atrLen = 0;
+    return false;
+  }
+  return true;
 }
 
 static bool openChannel(String* channel) {
@@ -631,6 +745,107 @@ bool esimInit() {
   }
   s_esimReady = true;
   return true;
+}
+
+bool esimRawPowerOn(uint8_t* atr, size_t atrCapacity, size_t* atrLen) {
+  if (atrLen) *atrLen = 0;
+  if (atr && atrCapacity > 0) memset(atr, 0, atrCapacity);
+  s_rawSessionReady = false;
+  setError("");
+
+  if (!atrLen) {
+    setError("ATR 长度指针为空");
+    return false;
+  }
+  // ML307A exposes the already powered UICC through 3GPP AT+CSIM.
+  String resp = sendESimATCommand("AT+CSIM=?", 3000);
+  if (resp.indexOf("OK") < 0) {
+    setError(String("模组不支持 AT+CSIM: ") + compactAtResponse(resp));
+    return false;
+  }
+
+  resp = sendESimATCommand("AT+CPIN?", 5000);
+  // Do not gate provisioning on SIM/profile readiness. Actual APDU errors
+  // remain authoritative for absent, locked, or inaccessible cards.
+  if (resp.indexOf("READY") < 0) {
+    logCaptureLn(String("CPIN 未报告 READY，继续尝试 eUICC 访问: ") + compactAtResponse(resp));
+  }
+
+  // ASR private command.  Current ML307A firmware returns *GATR:<ATR HEX>;
+  // parseGatrResponse() also accepts the older length-prefixed ASR variant.
+  resp = sendESimATCommand("AT*GATR", 3000);
+  if (!parseGatrResponse(resp, atr, atrCapacity, atrLen)) {
+    logCaptureLn(String("AT*GATR 不支持或 ATR 无法解析，使用空 ATR: ") + compactAtResponse(resp));
+    *atrLen = 0;
+  } else {
+    logCaptureLn(String("AT*GATR 读取 ATR 成功: bytes=") + String(*atrLen));
+  }
+
+  s_rawSessionReady = true;
+  return true;
+}
+
+bool esimTransmitRawApdu(const uint8_t* command, size_t commandLen,
+                         uint8_t* response, size_t responseCapacity,
+                         size_t* responseLen) {
+  if (responseLen) *responseLen = 0;
+  setError("");
+
+  if (!command || commandLen == 0 || !response || !responseLen) {
+    setError("原始 APDU 参数无效");
+    return false;
+  }
+  if (!s_rawSessionReady) {
+    setError("eUICC 原始会话尚未上电");
+    return false;
+  }
+  if (commandLen > ESIM_RAW_APDU_MAX_LEN) {
+    setError("原始 APDU 超过 4096 字节");
+    return false;
+  }
+
+  String commandHex = bytesToHex(command, commandLen);
+  String atCommand = "AT+CSIM=" + String(commandHex.length()) + ",\"" + commandHex + "\"";
+  logCaptureLn(String("eSIM CSIM TX: bytes=") + String(commandLen));
+  String atResponse = sendESimATCommand(atCommand.c_str(), 14000);
+  logCaptureLn(String("eSIM CSIM RX: ") + compactAtResponse(atResponse));
+
+  String responseHex;
+  if (!parseLengthPrefixedHexPayload(atResponse, "+CSIM:", &responseHex)) {
+    setError(String("原始 APDU 传输失败: ") + compactAtResponse(atResponse));
+    return false;
+  }
+
+  if (!isHexString(responseHex)) {
+    String compacted = printableHexCandidate(responseHex);
+    if (!isHexString(compacted)) {
+      setError("AT+CSIM 返回了非法 HEX");
+      return false;
+    }
+    responseHex = compacted;
+  }
+
+  const size_t required = responseHex.length() / 2;
+  if (required > responseCapacity || required > ESIM_RAW_APDU_MAX_LEN) {
+    setError(String("原始 APDU 响应过长: ") + String(required));
+    return false;
+  }
+  if (!hexToBytes(responseHex, response, responseCapacity, responseLen)) {
+    setError("无法解析 AT+CSIM 响应");
+    return false;
+  }
+  if (*responseLen < 2) {
+    *responseLen = 0;
+    setError("原始 APDU 响应缺少 SW1 SW2");
+    return false;
+  }
+  return true;
+}
+
+void esimResetRawSession() {
+  // The ML307A owns card power and does not expose a card-only reset command.
+  // Forget local state so a new BLE connection must run Power On again.
+  s_rawSessionReady = false;
 }
 
 bool esimGetEID(char* eid, size_t bufferSize) {

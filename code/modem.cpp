@@ -49,6 +49,7 @@ void resetModule() {
 
 // 模组 AT 初始化流程（setup 中调用，resetModule 后也调用）
 void modemInit() {
+  modemReady = false;
   modemLimitedMode = false;
   // 清掉上电噪声/残留
   while (Serial1.available()) Serial1.read();
@@ -74,7 +75,7 @@ void modemInit() {
   if (cgactOk) {
     logCaptureLn(String("已禁用数据连接(AT+CGACT=0,1)，防止流量消耗"));
   } else {
-    logCaptureLn(String("⚠️ CGACT 设置失败，可能未插卡，进入限制模式"));
+    logCaptureLn(String("⚠️ CGACT 设置失败，蜂窝功能进入限制模式；仍允许尝试 eSIM 管理"));
     modemReady = false;
     modemLimitedMode = true;
     return;
@@ -99,7 +100,7 @@ void modemInit() {
     logCaptureLn(String("网络已注册"));
     modemReady = true;
   } else {
-    logCaptureLn(String("⚠️ 网络注册超时（无SIM卡或信号差），模组功能不可用"));
+    logCaptureLn(String("⚠️ 网络注册超时，蜂窝功能受限；仍允许尝试 eSIM 管理"));
     modemReady = false;
     modemLimitedMode = true;
   }

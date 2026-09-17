@@ -50,11 +50,12 @@ void setup() {
   server.on("/api/v1/config", HTTP_GET, handleConfigGet);
   server.on("/api/v1/config", HTTP_POST, handleSave);
   server.on("/api/v1/sms", HTTP_POST, handleSendSms);
+  server.on("/api/v1/push/test", HTTP_POST, handlePushTest);
   server.on("/api/v1/ping", HTTP_POST, handlePing);
   server.on("/api/v1/wifi", HTTP_POST, handleWifi);
   server.on("/api/v1/logs", HTTP_GET, handleLog);
   const char* corsPaths[] = {
-    "/api/v1/status", "/api/v1/config", "/api/v1/sms", "/api/v1/ping",
+    "/api/v1/status", "/api/v1/config", "/api/v1/sms", "/api/v1/push/test", "/api/v1/ping",
     "/api/v1/wifi", "/api/v1/logs", "/query", "/flight", "/at", "/log",
     "/modem", "/wifi", "/esim", "/sendsms", "/ping", "/save"
   };
@@ -102,20 +103,22 @@ void setup() {
   modemInit();
 
   // ---- eSIM初始化 ----
+  // Cellular readiness is independent of eUICC management access.
   if (modemLimitedMode) {
-    logCaptureLn(String("限制模式：跳过 eSIM 初始化"));
-  } else {
-    logCaptureLn(String("初始化eSIM..."));
-    if (esimInit()) {
-      logCaptureLn(String("eSIM初始化成功"));
-      char eid[40];
-      if (esimGetEID(eid, sizeof(eid))) {
-        logCapture(String("EID: "));
-        logCaptureLn(eid);
-      }
+    logCaptureLn(String("蜂窝功能受限，仍尝试初始化 eSIM"));
+  }
+  logCaptureLn(String("初始化eSIM..."));
+  if (esimInit()) {
+    logCaptureLn(String("eSIM AT 能力检测通过，尝试读取 EID"));
+    char eid[40];
+    if (esimGetEID(eid, sizeof(eid))) {
+      logCapture(String("EID: "));
+      logCaptureLn(eid);
     } else {
-      logCaptureLn(String("eSIM初始化失败或未检测到eUICC芯片"));
+      logCaptureLn(String("eSIM EID 读取失败: ") + esimGetLastError());
     }
+  } else {
+    logCaptureLn(String("eSIM 初始化失败: ") + esimGetLastError());
   }
 
 }

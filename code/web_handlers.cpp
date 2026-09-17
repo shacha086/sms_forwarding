@@ -813,6 +813,67 @@ void handleSendSms() {
   server.send(success ? 200 : 400, "application/json", json);
 }
 
+// 使用页面当前填写的配置发送单个通道测试消息。密钥字段留空时沿用已保存值，
+// 这样 Web API 不需要回传敏感配置也能验证现有链路。
+void handlePushTest() {
+  if (!checkAuth()) return;
+
+  if (WiFi.status() != WL_CONNECTED) {
+    server.send(503, "application/json", "{\"success\":false,\"message\":\"WiFi 未连接，无法测试推送\"}");
+    return;
+  }
+
+  if (!server.hasArg("index")) {
+    server.send(400, "application/json", "{\"success\":false,\"message\":\"缺少推送通道编号\"}");
+    return;
+  }
+  const int index = server.arg("index").toInt();
+  if (index < 0 || index >= MAX_PUSH_CHANNELS) {
+    server.send(400, "application/json", "{\"success\":false,\"message\":\"推送通道编号无效\"}");
+    return;
+  }
+
+  PushChannel channel = config.pushChannels[index];
+  if (server.hasArg("type")) {
+    const int type = server.arg("type").toInt();
+    if (!isValidPushType(type)) {
+      server.send(400, "application/json", "{\"success\":false,\"message\":\"推送类型无效\"}");
+      return;
+    }
+    channel.type = (PushType)type;
+  }
+  if (server.hasArg("name")) channel.name = server.arg("name");
+  if (server.hasArg("url")) channel.url = server.arg("url");
+  if (server.hasArg("body")) channel.customBody = server.arg("body");
+  // 空密钥表示沿用设备中已保存的值，而不是清空。
+  if (server.hasArg("key1") && server.arg("key1").length() > 0) channel.key1 = server.arg("key1");
+  if (server.hasArg("key2") && server.arg("key2").length() > 0) channel.key2 = server.arg("key2");
+  channel.enabled = true;
+
+  if (!isPushChannelValid(channel)) {
+    server.send(400, "application/json", "{\"success\":false,\"message\":\"当前通道配置不完整，请检查 URL、Token 或密钥\"}");
+    return;
+  }
+
+  char timestamp[32];
+  time_t now = time(nullptr);
+  struct tm timeInfo;
+  gmtime_r(&now, &timeInfo);
+  strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S UTC", &timeInfo);
+
+  logCaptureLn(String("网页端测试推送通道 ") + String(index + 1));
+  int httpCode = 0;
+  String detail;
+  const bool success = sendToChannel(
+      channel, "SMS Forwarding 测试", "这是一条推送链路测试消息。", timestamp,
+      &httpCode, &detail);
+
+  String json = "{\"success\":" + String(success ? "true" : "false");
+  json += ",\"message\":\"" + jsonEscape(detail.length() > 0 ? detail : String("推送测试失败")) + "\"";
+  json += ",\"httpCode\":" + String(httpCode) + "}";
+  server.send(success ? 200 : 502, "application/json", json);
+}
+
 // 处理Ping请求
 void handlePing() {
   if (!checkAuth()) return;

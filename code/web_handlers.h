@@ -27,6 +27,7 @@ void handleFlightMode();
 void handleATCommand();
 void handleSendSms();
 void handlePing();
+void handlePushTest();
 void handleLog();
 void handleModem();
 void handleWifi();

@@ -2,8 +2,8 @@
 
 > 本项目修改自linuxdo大佬的[项目](https://github.com/chenxuuu/sms_forwarding)
 
-本项目仅用于接收短信与进行保号相关功能。  
-多卡控制、通话、拨号、开放接口、eSIM卡管理等功能永远不会支持，请勿提出相关需求。
+本项目主要用于接收短信与进行保号，并提供 eSIM 配置管理及 NekokoLPA2 RED BLE v1
+原始 APDU 透传。通话和拨号不在当前支持范围内。
 
 ![后台页面演示](assets/esim.png)
 
@@ -24,6 +24,8 @@
 - 支持长短信自动合并（30秒超时）
 - 支持管理员短信远程发送短信和重启设备
 - 支持eSIM卡管理功能
+- 支持 NekokoLPA2 RED BLE v1，通过 ML307A `AT*GATR` 读取 ATR，并以 `AT+CSIM`
+  透传 APDU 以下载和管理 eSIM 配置
 
 ## 推送通道支持
 
@@ -123,7 +125,7 @@ https://jihulab.com/esp-mirror/espressif/arduino-esp32/-/raw/gh-pages/package_es
 lib：
 - **ReadyMail** by Mobizt
 - **pdulib** by David Henry
-- **NimBLE-Arduino** by h2zero（BLE 配网，建议 2.3.7）
+- **NimBLE-Arduino** by h2zero（BLE 配网及 RED BLE v1，建议 2.3.7）
 
 当前固件使用纯 JSON REST API，不再把管理网页打包进固件。REST 路径与 BLE
 Characteristic UUID 见 [`dev_doc/rest_ble_api.md`](dev_doc/rest_ble_api.md)。WiFi 可通过
